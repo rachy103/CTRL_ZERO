@@ -15,7 +15,7 @@ RatioPoint = tuple[float, float]
 @dataclass(frozen=True)
 class ROICropConfig:
     enabled: bool = True
-    top_ratio: float = 0.35
+    top_ratio: float = 0.0
     bottom_ratio: float = 1.0
     left_ratio: float = 0.0
     right_ratio: float = 1.0
@@ -29,6 +29,7 @@ class BirdEyeConfig:
     src_top_right: RatioPoint = (0.62, 0.35)
     src_top_left: RatioPoint = (0.38, 0.35)
     dst_margin_ratio: float = 0.18
+    mask_source_polygon: bool = True
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,19 @@ class FrameTransform:
         points[:, 1] += self.crop_y
         cv2.polylines(image, [points.astype(np.int32)], isClosed=True, color=(255, 0, 255), thickness=2)
 
+    def image_to_processed(self, image: np.ndarray, mask_source_polygon: bool = True) -> np.ndarray:
+        cropped = image[self.crop_y : self.crop_y + self.crop_height, self.crop_x : self.crop_x + self.crop_width]
+        if mask_source_polygon and self.bird_eye_source_points is not None:
+            cropped = _mask_polygon(cropped, self.bird_eye_source_points)
+        if self.perspective_matrix is None:
+            return cropped.copy()
+        return cv2.warpPerspective(
+            cropped,
+            self.perspective_matrix,
+            (self.crop_width, self.crop_height),
+            flags=cv2.INTER_LINEAR,
+        )
+
 
 class LanePreprocessor:
     """ROI crop and optional bird-eye transform for lane detector input."""
@@ -129,7 +143,8 @@ class LanePreprocessor:
             destination_points = self._destination_points(crop_w, crop_h)
             matrix = cv2.getPerspectiveTransform(source_points, destination_points)
             inverse_matrix = cv2.getPerspectiveTransform(destination_points, source_points)
-            processed = cv2.warpPerspective(cropped, matrix, (crop_w, crop_h), flags=cv2.INTER_LINEAR)
+            warp_source = _mask_polygon(cropped, source_points) if self.bird_eye.mask_source_polygon else cropped
+            processed = cv2.warpPerspective(warp_source, matrix, (crop_w, crop_h), flags=cv2.INTER_LINEAR)
 
         return processed, FrameTransform(
             original_width=original_w,
@@ -192,3 +207,9 @@ class LanePreprocessor:
             y = clamp(y_ratio, 0.0, 1.0) * (height - 1)
             scaled.append([x, y])
         return np.array(scaled, dtype=np.float32)
+
+
+def _mask_polygon(image: np.ndarray, points: np.ndarray) -> np.ndarray:
+    mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [points.astype(np.int32)], 255)
+    return cv2.bitwise_and(image, image, mask=mask)

@@ -62,6 +62,7 @@ def reuse_detection_on_frame(frame, previous: LaneDetection, confidence_scale: f
         mask=previous.mask,
         annotated=annotated,
         curvature=previous.curvature,
+        lane_pair_label=previous.lane_pair_label,
     )
 
 

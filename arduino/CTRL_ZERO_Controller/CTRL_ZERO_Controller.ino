@@ -4,6 +4,9 @@
 //   steer,speed\n
 //   steer: -100..100, positive means right target angle
 //   speed: -255..255, positive means forward
+// Diagnostic query:
+//   ?\n
+//   prints current potentiometer count, target count, steer target, and drive PWM.
 
 const int DRIVE_L_IN1 = 2;
 const int DRIVE_L_IN2 = 3;
@@ -15,7 +18,7 @@ const int STEER_POT = A5;
 
 const bool DRIVE_L_INVERTED = true;
 const bool DRIVE_R_INVERTED = true;
-const bool STEER_INVERTED = false;
+const bool STEER_INVERTED = true;
 
 // 가변저항 값 범위: 사용자가 실측한 딱 엣지값.
 const int POT_LEFT = 569;
@@ -65,7 +68,11 @@ void loop() {
     char c = Serial.read();
     if (c == '\n') {
       inputBuf[inputLen] = '\0';
-      parseCommand(inputBuf);
+      if (strcmp(inputBuf, "?") == 0) {
+        printStatus();
+      } else {
+        parseCommand(inputBuf);
+      }
       inputLen = 0;
     } else if (c != '\r' && inputLen < sizeof(inputBuf) - 1) {
       inputBuf[inputLen++] = c;
@@ -136,6 +143,27 @@ void updateSteerPID(float dt) {
   pwm = constrain(pwm, 0, STEER_MAX_PWM);
 
   driveSteer(dir, pwm);
+}
+
+void printStatus() {
+  int pot = analogRead(STEER_POT);
+  int potTarget = steerToPotTarget(targetSteer);
+  Serial.print("STATUS pot=");
+  Serial.print(pot);
+  Serial.print(" target=");
+  Serial.print(potTarget);
+  Serial.print(" err=");
+  Serial.print(potTarget - pot);
+  Serial.print(" desired_steer=");
+  Serial.print(desiredSteer, 1);
+  Serial.print(" target_steer=");
+  Serial.print(targetSteer, 1);
+  Serial.print(" drive_pwm=");
+  Serial.print(driveCmdPwm);
+  Serial.print(" edges_left=");
+  Serial.print(POT_LEFT);
+  Serial.print(" edges_right=");
+  Serial.println(POT_RIGHT);
 }
 
 void driveSteer(int dir, int pwm) {

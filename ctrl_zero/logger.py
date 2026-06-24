@@ -26,11 +26,15 @@ class DriveLogger:
         self.csv_file = None
         self.writer = None
         self.frame_dir = config.directory / "frames"
+        self.annotated_dir = config.directory / "annotated"
+        self.mask_dir = config.directory / "masks"
 
     def open(self) -> None:
         if not self.config.enabled:
             return
         self.frame_dir.mkdir(parents=True, exist_ok=True)
+        self.annotated_dir.mkdir(parents=True, exist_ok=True)
+        self.mask_dir.mkdir(parents=True, exist_ok=True)
         self.csv_file = (self.config.directory / "drive_log.csv").open("w", newline="", encoding="utf-8")
         self.writer = csv.DictWriter(
             self.csv_file,
@@ -48,10 +52,13 @@ class DriveLogger:
                 "heading_deg",
                 "curvature_1_per_px",
                 "lane_width_px",
+                "lane_pair",
                 "nearest_front_mm",
                 "lidar_speed_scale",
                 "lidar_front_points",
                 "image_file",
+                "annotated_file",
+                "mask_file",
             ],
         )
         self.writer.writeheader()
@@ -70,9 +77,16 @@ class DriveLogger:
             return
         self.index += 1
         image_file = ""
+        annotated_file = ""
+        mask_file = ""
         if self.index % max(self.config.save_every_n_frames, 1) == 0:
             image_file = f"frame_{self.index:06d}.jpg"
+            annotated_file = f"annotated_{self.index:06d}.jpg"
             cv2.imwrite(str(self.frame_dir / image_file), frame)
+            cv2.imwrite(str(self.annotated_dir / annotated_file), lane.annotated)
+            if lane.mask is not None:
+                mask_file = f"mask_{self.index:06d}.png"
+                cv2.imwrite(str(self.mask_dir / mask_file), lane.mask)
 
         self.writer.writerow(
             {
@@ -89,10 +103,13 @@ class DriveLogger:
                 "heading_deg": "" if lane.heading_deg is None else f"{lane.heading_deg:.3f}",
                 "curvature_1_per_px": f"{lane.curvature:.8f}",
                 "lane_width_px": "" if lane.lane_width_px is None else f"{lane.lane_width_px:.3f}",
+                "lane_pair": lane.lane_pair_label,
                 "nearest_front_mm": "" if obstacle is None or obstacle.nearest_front_mm is None else f"{obstacle.nearest_front_mm:.1f}",
                 "lidar_speed_scale": "" if obstacle is None else f"{obstacle.speed_scale:.3f}",
                 "lidar_front_points": "" if obstacle is None else obstacle.front_points,
                 "image_file": image_file,
+                "annotated_file": annotated_file,
+                "mask_file": mask_file,
             }
         )
         self.csv_file.flush()

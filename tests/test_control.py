@@ -40,16 +40,28 @@ def test_positive_offset_steers_right():
     assert command.speed > 0
 
 
-def test_curvature_feedforward_uses_expected_sign():
-    right = DriveController(DriveConfig(min_confidence=0.1)).compute(lane(curvature=0.004), None, "auto")
-    left = DriveController(DriveConfig(min_confidence=0.1)).compute(lane(curvature=-0.004), None, "auto")
+def test_contest_heading_angle_uses_expected_sign():
+    right = DriveController(DriveConfig(min_confidence=0.1)).compute(lane(heading_deg=50.0), None, "auto")
+    left = DriveController(DriveConfig(min_confidence=0.1)).compute(lane(heading_deg=-50.0), None, "auto")
     assert right.steer > 0
     assert left.steer < 0
 
 
-def test_curvature_reduces_settled_speed():
+def test_contest_position_term_uses_contest_vehicle_position_sign():
+    controller = DriveController(DriveConfig(min_confidence=0.1))
+    command = controller.compute(lane(offset_norm=-0.25), None, "auto")
+    assert command.steer < 0
+
+
+def test_stanley_curvature_reduces_settled_speed():
     straight_controller = DriveController(DriveConfig(min_confidence=0.1))
-    curve_controller = DriveController(DriveConfig(min_confidence=0.1))
+    curve_controller = DriveController(
+        DriveConfig(control_mode="stanley", min_speed=35, max_speed=80, min_confidence=0.1, ff_gain=1.0)
+    )
+    straight_controller.config.control_mode = "stanley"
+    straight_controller.config.min_speed = 35
+    straight_controller.config.max_speed = 80
+    straight_controller.config.ff_gain = 1.0
     straight = None
     curve = None
     for _ in range(30):

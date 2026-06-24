@@ -52,12 +52,12 @@ LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 0.35
 
 # YOLO lane model. Use a lane-trained Ultralytics .pt file, not a generic COCO model.
-YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "lane.pt"
+YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final.pt"
 YOLO_DEVICE = "cpu"
 YOLO_IMAGE_SIZE = 640
 YOLO_CONFIDENCE = 0.25
 YOLO_IOU = 0.45
-YOLO_CLASS_NAMES = ("lane", "left_lane", "right_lane", "center_lane", "dashed_lane", "solid_lane", "road_line", "line")
+YOLO_CLASS_NAMES = ("car", "lane1", "lane2", "traffic_light")
 YOLO_FRAME_SKIP = 1
 YOLO_MIN_POINTS_PER_LANE = 3
 YOLO_MIN_VALID_Y_SPAN_RATIO = 0.08
@@ -68,20 +68,29 @@ YOLO_DASHED_MERGE_MAX_X_GAP_RATIO = 0.12
 YOLO_CURVE_FIT_DEGREE = 2
 YOLO_SOLIDIFY_STEP_PX = 6
 YOLO_FIT_OUTLIER_REJECTION_PX = 35.0
+YOLO_SEGMENTATION_MODE = "lane_area"  # "lane_area" follows lane1/lane2 area centers. "drivable_area" follows one road mask.
+YOLO_DRIVABLE_MIN_ROW_WIDTH_RATIO = 0.05
+YOLO_DRIVABLE_EDGE_PERCENTILE = 2.0
+YOLO_TARGET_LANE_PAIR = "right"  # "right"=right lane, "left"=left lane, "closest"=nearest pair.
+YOLO_TARGET_PATH_MODE = "closest_line"  # "closest_line" follows one line. "lane_center" follows the lane pair center.
+YOLO_LANE_PAIR_SELECT_Y_RATIO = 0.78
+YOLO_LANE_PAIR_TARGET_OFFSET_RATIO = 0.0
 
 # YOLO input preprocessing. ROI crop is safe to enable first. Bird-eye view needs camera-specific tuning.
 ROI_ENABLED = True
-ROI_TOP_RATIO = 0.35
+ROI_TOP_RATIO = 0.00
 ROI_BOTTOM_RATIO = 1.00
 ROI_LEFT_RATIO = 0.00
 ROI_RIGHT_RATIO = 1.00
 
 BIRD_EYE_ENABLED = False
-BIRD_EYE_SRC_BOTTOM_LEFT = (0.10, 0.98)
-BIRD_EYE_SRC_BOTTOM_RIGHT = (0.90, 0.98)
-BIRD_EYE_SRC_TOP_RIGHT = (0.62, 0.35)
-BIRD_EYE_SRC_TOP_LEFT = (0.38, 0.35)
+BIRD_EYE_SRC_BOTTOM_LEFT = (0.20, 0.98)
+BIRD_EYE_SRC_BOTTOM_RIGHT = (0.95, 0.98)
+BIRD_EYE_SRC_TOP_RIGHT = (0.70, 0.35)
+BIRD_EYE_SRC_TOP_LEFT = (0.50, 0.35)
 BIRD_EYE_DST_MARGIN_RATIO = 0.18
+BIRD_EYE_MASK_SOURCE_POLYGON = True
+YOLO_DISPLAY_BIRD_EYE_VIEW = True
 
 # OpenCV fallback lane detector
 OPENCV_RESIZE_WIDTH = 640
@@ -95,10 +104,17 @@ DEFAULT_LANE_WIDTH_RATIO = 0.50
 MIN_LANE_WIDTH_RATIO = 0.35
 MAX_LANE_WIDTH_RATIO = 0.65
 
-# Stanley + curvature feed-forward driving controller. Positive steer means right.
-MIN_SPEED = 35
-MAX_SPEED = 80
+# Driving controller. Positive steer means right.
+CONTROL_MODE = "contest"  # "contest" uses angle/position weights. "stanley" keeps the old Stanley controller.
+MIN_SPEED = 200
+MAX_SPEED = 200
 MIN_LANE_CONFIDENCE_TO_DRIVE = 0.45
+CONTEST_ANGLE_WEIGHT = 0.7
+CONTEST_POSITION_WEIGHT = 0.07
+CONTEST_STEERING_ANGLE_NORM_DEG = 50.0
+CONTEST_STEER_LIMIT = 10.0
+
+# Stanley fallback parameters.
 CURVE_SPEED_GAIN = 3.0
 KAPPA_REF = 0.0015
 WHEELBASE_PX = 220.0
@@ -120,7 +136,7 @@ MANUAL_STEER_HOLD_MS = 180
 
 # Display/logging
 DISPLAY_ENABLED = True
-SHOW_MASK_WINDOW = False
+SHOW_MASK_WINDOW = True
 LOG_ENABLED = False
 LOG_DIR = BASE_DIR / "lane_logs"
 SAVE_EVERY_N_FRAMES = 5
@@ -146,6 +162,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yolo-curve-degree", type=int, default=YOLO_CURVE_FIT_DEGREE)
     parser.add_argument("--yolo-solid-step", type=int, default=YOLO_SOLIDIFY_STEP_PX)
     parser.add_argument("--yolo-fit-outlier-px", type=float, default=YOLO_FIT_OUTLIER_REJECTION_PX)
+    parser.add_argument("--yolo-segmentation-mode", choices=("lane_area", "drivable_area", "lane_lines"), default=YOLO_SEGMENTATION_MODE)
+    parser.add_argument("--yolo-drivable-min-row-width", type=float, default=YOLO_DRIVABLE_MIN_ROW_WIDTH_RATIO)
+    parser.add_argument("--yolo-drivable-edge-percentile", type=float, default=YOLO_DRIVABLE_EDGE_PERCENTILE)
+    parser.add_argument("--yolo-target-lane-pair", choices=("right", "left", "closest", "center", "split"), default=YOLO_TARGET_LANE_PAIR)
+    parser.add_argument("--yolo-target-path", choices=("closest_line", "left_line", "right_line", "lane_center"), default=YOLO_TARGET_PATH_MODE)
+    parser.add_argument("--yolo-pair-select-y", type=float, default=YOLO_LANE_PAIR_SELECT_Y_RATIO)
+    parser.add_argument("--yolo-pair-target-offset", type=float, default=YOLO_LANE_PAIR_TARGET_OFFSET_RATIO)
     parser.add_argument("--roi", action=argparse.BooleanOptionalAction, default=ROI_ENABLED)
     parser.add_argument("--roi-top", type=float, default=ROI_TOP_RATIO)
     parser.add_argument("--roi-bottom", type=float, default=ROI_BOTTOM_RATIO)
@@ -153,6 +176,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--roi-right", type=float, default=ROI_RIGHT_RATIO)
     parser.add_argument("--bird-eye", action=argparse.BooleanOptionalAction, default=BIRD_EYE_ENABLED)
     parser.add_argument("--bev-dst-margin", type=float, default=BIRD_EYE_DST_MARGIN_RATIO)
+    parser.add_argument("--bev-mask-source", action=argparse.BooleanOptionalAction, default=BIRD_EYE_MASK_SOURCE_POLYGON)
+    parser.add_argument("--yolo-display-bev", action=argparse.BooleanOptionalAction, default=YOLO_DISPLAY_BIRD_EYE_VIEW)
     parser.add_argument("--camera-index", type=int, default=CAMERA_INDEX)
     parser.add_argument("--camera-backend", choices=("dshow", "msmf", "any"), default=CAMERA_BACKEND)
     parser.add_argument("--camera-width", type=int, default=CAMERA_WIDTH)
@@ -182,6 +207,7 @@ def build_lane_preprocessor(args) -> LanePreprocessor:
             src_top_right=BIRD_EYE_SRC_TOP_RIGHT,
             src_top_left=BIRD_EYE_SRC_TOP_LEFT,
             dst_margin_ratio=args.bev_dst_margin,
+            mask_source_polygon=args.bev_mask_source,
         ),
     )
 
@@ -223,9 +249,17 @@ def build_lane_detector(args):
             curve_fit_degree=args.yolo_curve_degree,
             solidify_step_px=args.yolo_solid_step,
             fit_outlier_rejection_px=args.yolo_fit_outlier_px,
+            segmentation_mode=args.yolo_segmentation_mode,
+            drivable_min_row_width_ratio=args.yolo_drivable_min_row_width,
+            drivable_edge_percentile=args.yolo_drivable_edge_percentile,
+            target_lane_pair=args.yolo_target_lane_pair,
+            target_path_mode=args.yolo_target_path,
+            lane_pair_select_y_ratio=args.yolo_pair_select_y,
+            lane_pair_target_offset_ratio=args.yolo_pair_target_offset,
             default_lane_width_ratio=DEFAULT_LANE_WIDTH_RATIO,
             min_lane_width_ratio=MIN_LANE_WIDTH_RATIO,
             max_lane_width_ratio=MAX_LANE_WIDTH_RATIO,
+            display_bird_eye_view=args.yolo_display_bev,
             preprocessor=build_lane_preprocessor(args),
         )
     )
@@ -259,8 +293,13 @@ def main() -> None:
     )
     controller = DriveController(
         DriveConfig(
+            control_mode=CONTROL_MODE,
             min_speed=MIN_SPEED,
             max_speed=MAX_SPEED,
+            contest_angle_weight=CONTEST_ANGLE_WEIGHT,
+            contest_position_weight=CONTEST_POSITION_WEIGHT,
+            contest_angle_norm_deg=CONTEST_STEERING_ANGLE_NORM_DEG,
+            contest_steer_limit=CONTEST_STEER_LIMIT,
             curve_speed_gain=CURVE_SPEED_GAIN,
             kappa_ref=KAPPA_REF,
             wheelbase_px=WHEELBASE_PX,

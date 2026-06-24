@@ -45,3 +45,27 @@ def test_identity_bird_eye_preserves_points():
 
     assert warped.shape[:2] == frame.shape[:2]
     assert transform.points_to_original([(10, 20), (119, 79)]) == [(10, 20), (119, 79)]
+
+
+def test_bird_eye_masks_source_polygon_and_display_matches_input_transform():
+    frame = np.full((80, 120, 3), 255, dtype=np.uint8)
+    preprocessor = LanePreprocessor(
+        roi=ROICropConfig(enabled=False),
+        bird_eye=BirdEyeConfig(
+            enabled=True,
+            src_bottom_left=(0.35, 0.95),
+            src_bottom_right=(0.65, 0.95),
+            src_top_right=(0.60, 0.25),
+            src_top_left=(0.40, 0.25),
+            dst_margin_ratio=0.20,
+            mask_source_polygon=True,
+        ),
+    )
+
+    warped, transform = preprocessor.apply(frame)
+    display = transform.image_to_processed(frame, mask_source_polygon=True)
+
+    assert np.array_equal(display, warped)
+    assert warped[:, 0].max() == 0
+    assert warped[:, -1].max() == 0
+    assert warped[40, 60].min() == 255

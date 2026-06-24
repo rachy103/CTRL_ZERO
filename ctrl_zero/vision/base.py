@@ -24,6 +24,7 @@ class LaneDetection:
     mask: np.ndarray | None
     annotated: np.ndarray
     curvature: float = 0.0
+    lane_pair_label: str = ""
 
     @property
     def has_center(self) -> bool:

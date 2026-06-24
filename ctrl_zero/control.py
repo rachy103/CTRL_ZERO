@@ -10,14 +10,19 @@ from ctrl_zero.vision.base import LaneDetection
 
 @dataclass
 class DriveConfig:
-    min_speed: int = 35
-    max_speed: int = 80
+    control_mode: str = "contest"
+    min_speed: int = 150
+    max_speed: int = 255
+    contest_angle_weight: float = 0.7
+    contest_position_weight: float = 0.05
+    contest_angle_norm_deg: float = 50.0
+    contest_steer_limit: float = 10.0
     curve_speed_gain: float = 3.0
     kappa_ref: float = 0.0015
     wheelbase_px: float = 220.0
     k_stanley: float = 1.6
     heading_gain: float = 1.0
-    ff_gain: float = 1.0
+    ff_gain: float = 0.0
     steer_scale: float = 100.0
     max_steer: int = 100
     reverse_steer: bool = False
@@ -36,7 +41,7 @@ class DriveCommand:
 
 
 class DriveController:
-    """Stanley controller with curvature feed-forward and smooth failover."""
+    """Contest lane follower by default, with Stanley available as a fallback."""
 
     def __init__(self, config: DriveConfig):
         self.config = config
@@ -62,6 +67,32 @@ class DriveController:
             return self._handle_lost(obstacle)
 
         self.lost_frames = 0
+        if self.config.control_mode.lower().strip() == "stanley":
+            return self._compute_stanley(lane, obstacle)
+        return self._compute_contest(lane, obstacle)
+
+    def _compute_contest(self, lane: LaneDetection, obstacle: ObstacleDecision | None) -> DriveCommand:
+        steering_angle = lane.heading_deg or 0.0
+        vehicle_position_x = -(lane.offset_px or 0.0)
+
+        angle_norm = max(abs(self.config.contest_angle_norm_deg), 1e-9)
+        steer_limit = max(abs(self.config.contest_steer_limit), 1e-9)
+        mapped = (steering_angle / angle_norm) * steer_limit * self.config.contest_angle_weight
+        adjust = -vehicle_position_x * self.config.contest_position_weight
+        contest_steer = clamp(mapped + adjust, -steer_limit, steer_limit)
+
+        steer_raw = (contest_steer / steer_limit) * self.config.max_steer
+        if self.config.reverse_steer:
+            steer_raw = -steer_raw
+        steer = int(round(clamp(steer_raw, -self.config.max_steer, self.config.max_steer)))
+
+        speed_target = int(clamp(self.config.max_speed, self.config.min_speed, self.config.max_speed))
+        self.prev_steer = steer
+        self.prev_speed = speed_target
+        speed, reason = self._apply_obstacle(speed_target, obstacle, "contest")
+        return DriveCommand(steer=steer, speed=speed, reason=reason)
+
+    def _compute_stanley(self, lane: LaneDetection, obstacle: ObstacleDecision | None) -> DriveCommand:
         e_y = lane.offset_norm
         e_psi = math.radians(lane.heading_deg or 0.0)
         kappa = lane.curvature or 0.0
