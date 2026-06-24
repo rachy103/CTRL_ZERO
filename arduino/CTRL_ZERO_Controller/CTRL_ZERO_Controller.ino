@@ -48,7 +48,7 @@ unsigned long lastCommandMs = 0;
 unsigned long lastLoopMs = 0;
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   pinMode(DRIVE_L_IN1, OUTPUT);
   pinMode(DRIVE_L_IN2, OUTPUT);
   pinMode(DRIVE_R_IN1, OUTPUT);
