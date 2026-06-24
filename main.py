@@ -62,6 +62,12 @@ YOLO_FRAME_SKIP = 1
 YOLO_MIN_POINTS_PER_LANE = 3
 YOLO_MIN_VALID_Y_SPAN_RATIO = 0.08
 YOLO_MASK_SAMPLE_STEP_PX = 6
+YOLO_SKELETON_ENABLED = True
+YOLO_SKELETON_BRIDGE_GAP_PX = 17
+YOLO_DASHED_MERGE_MAX_X_GAP_RATIO = 0.12
+YOLO_CURVE_FIT_DEGREE = 2
+YOLO_SOLIDIFY_STEP_PX = 6
+YOLO_FIT_OUTLIER_REJECTION_PX = 35.0
 
 # YOLO input preprocessing. ROI crop is safe to enable first. Bird-eye view needs camera-specific tuning.
 ROI_ENABLED = True
@@ -128,6 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yolo-min-points", type=int, default=YOLO_MIN_POINTS_PER_LANE)
     parser.add_argument("--yolo-min-y-span", type=float, default=YOLO_MIN_VALID_Y_SPAN_RATIO)
     parser.add_argument("--yolo-mask-step", type=int, default=YOLO_MASK_SAMPLE_STEP_PX)
+    parser.add_argument("--yolo-skeleton", action=argparse.BooleanOptionalAction, default=YOLO_SKELETON_ENABLED)
+    parser.add_argument("--yolo-bridge-gap", type=int, default=YOLO_SKELETON_BRIDGE_GAP_PX)
+    parser.add_argument("--yolo-merge-gap-ratio", type=float, default=YOLO_DASHED_MERGE_MAX_X_GAP_RATIO)
+    parser.add_argument("--yolo-curve-degree", type=int, default=YOLO_CURVE_FIT_DEGREE)
+    parser.add_argument("--yolo-solid-step", type=int, default=YOLO_SOLIDIFY_STEP_PX)
+    parser.add_argument("--yolo-fit-outlier-px", type=float, default=YOLO_FIT_OUTLIER_REJECTION_PX)
     parser.add_argument("--roi", action=argparse.BooleanOptionalAction, default=ROI_ENABLED)
     parser.add_argument("--roi-top", type=float, default=ROI_TOP_RATIO)
     parser.add_argument("--roi-bottom", type=float, default=ROI_BOTTOM_RATIO)
@@ -199,6 +211,12 @@ def build_lane_detector(args):
             min_points_per_lane=args.yolo_min_points,
             min_valid_y_span_ratio=args.yolo_min_y_span,
             mask_sample_step_px=args.yolo_mask_step,
+            skeleton_enabled=args.yolo_skeleton,
+            skeleton_bridge_gap_px=args.yolo_bridge_gap,
+            dashed_merge_max_x_gap_ratio=args.yolo_merge_gap_ratio,
+            curve_fit_degree=args.yolo_curve_degree,
+            solidify_step_px=args.yolo_solid_step,
+            fit_outlier_rejection_px=args.yolo_fit_outlier_px,
             default_lane_width_ratio=DEFAULT_LANE_WIDTH_RATIO,
             min_lane_width_ratio=MIN_LANE_WIDTH_RATIO,
             max_lane_width_ratio=MAX_LANE_WIDTH_RATIO,

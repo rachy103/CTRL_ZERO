@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import cv2
+import numpy as np
 
 from ctrl_zero.vision.base import LaneDetection
 
@@ -67,6 +68,9 @@ def _draw_fit(image, fit, near_y, far_y, color) -> None:
     if fit is None:
         return
     h, w = image.shape[:2]
-    x_near = int(max(0, min(w - 1, float(fit[0] * near_y + fit[1]))))
-    x_far = int(max(0, min(w - 1, float(fit[0] * far_y + fit[1]))))
-    cv2.line(image, (x_near, near_y), (x_far, far_y), color, 3)
+    points = []
+    for y in range(int(far_y), int(near_y) + 1, 6):
+        x = int(max(0, min(w - 1, float(np.polyval(fit, y)))))
+        points.append((x, y))
+    if len(points) >= 2:
+        cv2.polylines(image, [np.array(points, dtype=np.int32)], isClosed=False, color=color, thickness=3)

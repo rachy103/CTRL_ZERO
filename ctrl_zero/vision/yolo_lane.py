@@ -26,6 +26,12 @@ class YOLOLaneConfig:
     mask_sample_step_px: int = 6
     min_points_per_lane: int = 3
     min_valid_y_span_ratio: float = 0.08
+    skeleton_enabled: bool = True
+    skeleton_bridge_gap_px: int = 17
+    dashed_merge_max_x_gap_ratio: float = 0.12
+    curve_fit_degree: int = 2
+    solidify_step_px: int = 6
+    fit_outlier_rejection_px: float = 35.0
     default_lane_width_ratio: float = 0.50
     min_lane_width_ratio: float = 0.35
     max_lane_width_ratio: float = 0.65
@@ -33,6 +39,15 @@ class YOLOLaneConfig:
     center_smoothing: float = 0.35
     max_missed_frames: int = 12
     preprocessor: LanePreprocessor | None = None
+
+
+@dataclass
+class LaneFragment:
+    points: list[Point]
+    fit: np.ndarray
+    min_y: float
+    max_y: float
+    median_y: float
 
 
 class YOLOLaneDetector:
@@ -73,12 +88,16 @@ class YOLOLaneDetector:
             retina_masks=True,
         )
         result = results[0]
-        lanes = self._extract_lanes(result, model_h, model_w)
+        lane_fragments = self._extract_lanes(result, model_h, model_w)
         if transform is not None:
-            lanes = [transform.points_to_original(lane) for lane in lanes]
-        fits = [self._fit_lane_x_of_y(lane, h) for lane in lanes]
-        fits = [fit for fit in fits if fit is not None]
+            lane_fragments = [transform.points_to_original(lane) for lane in lane_fragments]
+
+        fits = self._fit_lane_groups(lane_fragments, h, w, near_y, frame_center_x)
+        if not fits:
+            fits = [self._fit_lane_x_of_y(lane, h) for lane in lane_fragments]
+            fits = [fit for fit in fits if fit is not None]
         left_fit, right_fit = self._select_left_right_fits(fits, frame_center_x, near_y)
+        lanes = self._solidified_lanes_from_fits((left_fit, right_fit), h, w, near_y, far_y)
 
         left_near = self._x_at_y(left_fit, near_y)
         right_near = self._x_at_y(right_fit, near_y)
@@ -98,7 +117,7 @@ class YOLOLaneDetector:
             center_near = right_near - width_px / 2.0
             center_far = right_far - width_px / 2.0 if right_far is not None else None
 
-        confidence = self._confidence(left_fit, right_fit, len(lanes), result)
+        confidence = self._confidence(left_fit, right_fit, len(lane_fragments), result)
         if center_near is None:
             self.missed_frames += 1
             if self.missed_frames <= self.config.max_missed_frames and self.center_near_x is not None:
@@ -122,6 +141,7 @@ class YOLOLaneDetector:
         annotated = self._annotate(
             frame,
             lanes,
+            lane_fragments,
             left_fit,
             right_fit,
             center_near,
@@ -184,7 +204,8 @@ class YOLOLaneDetector:
         return lanes
 
     def _centerline_from_mask(self, mask: np.ndarray) -> list[Point]:
-        ys, xs = np.where(mask)
+        center_mask = self._skeletonize_lane_mask(mask) if self.config.skeleton_enabled else mask
+        ys, xs = np.where(center_mask)
         if len(xs) == 0:
             return []
         points = []
@@ -195,6 +216,28 @@ class YOLOLaneDetector:
                 continue
             points.append((int(np.median(row_x)), int(y)))
         return points
+
+    def _skeletonize_lane_mask(self, mask: np.ndarray) -> np.ndarray:
+        binary = (mask.astype(np.uint8) * 255)
+        if self.config.skeleton_bridge_gap_px > 1:
+            gap = max(3, int(self.config.skeleton_bridge_gap_px))
+            if gap % 2 == 0:
+                gap += 1
+            bridge_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, gap))
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, bridge_kernel)
+
+        skeleton = np.zeros(binary.shape, dtype=np.uint8)
+        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        working = binary.copy()
+        max_iterations = max(binary.shape)
+        for _ in range(max_iterations):
+            eroded = cv2.erode(working, element)
+            opened = cv2.dilate(eroded, element)
+            skeleton = cv2.bitwise_or(skeleton, cv2.subtract(working, opened))
+            working = eroded
+            if cv2.countNonZero(working) == 0:
+                break
+        return skeleton > 0
 
     def _extract_box_lanes(self, result) -> list[list[Point]]:
         if result.boxes is None:
@@ -221,15 +264,90 @@ class YOLOLaneDetector:
             class_name = str(class_id)
         return any(token in class_name for token in self.class_names)
 
-    def _fit_lane_x_of_y(self, points: Sequence[Point], image_height: int):
+    def _fit_lane_groups(self, lane_fragments: Sequence[Sequence[Point]], image_height: int, image_width: int, near_y: int, frame_center_x: float):
+        fragments = self._build_lane_fragments(lane_fragments)
+        if not fragments:
+            return []
+
+        groups: list[list[Point]] = []
+        max_gap = max(18.0, image_width * self.config.dashed_merge_max_x_gap_ratio)
+        for fragment in sorted(fragments, key=lambda item: self._x_at_y(item.fit, near_y) or frame_center_x):
+            best_index = None
+            best_distance = float("inf")
+            fragment_x = self._x_at_y(fragment.fit, fragment.median_y)
+            if fragment_x is None:
+                continue
+
+            for index, group_points in enumerate(groups):
+                group_fit = self._fit_lane_x_of_y(group_points, image_height, min_y_span_ratio=0.0, degree=1)
+                if group_fit is None:
+                    continue
+                group_x = self._x_at_y(group_fit, fragment.median_y)
+                if group_x is None:
+                    continue
+                if (group_x < frame_center_x) != (fragment_x < frame_center_x):
+                    continue
+                distance = abs(group_x - fragment_x)
+                if distance < best_distance:
+                    best_distance = distance
+                    best_index = index
+
+            if best_index is None or best_distance > max_gap:
+                groups.append(list(fragment.points))
+            else:
+                groups[best_index].extend(fragment.points)
+
+        fits = []
+        for group_points in groups:
+            fit = self._fit_lane_x_of_y(group_points, image_height)
+            if fit is not None:
+                fits.append(fit)
+        return fits
+
+    def _build_lane_fragments(self, lane_fragments: Sequence[Sequence[Point]]) -> list[LaneFragment]:
+        fragments: list[LaneFragment] = []
+        for points in lane_fragments:
+            fit = self._fit_lane_x_of_y(points, image_height=1, min_y_span_ratio=0.0, degree=1)
+            if fit is None:
+                continue
+            ys = np.array([p[1] for p in points], dtype=np.float64)
+            fragments.append(
+                LaneFragment(
+                    points=list(points),
+                    fit=fit,
+                    min_y=float(ys.min()),
+                    max_y=float(ys.max()),
+                    median_y=float(np.median(ys)),
+                )
+            )
+        return fragments
+
+    def _fit_lane_x_of_y(
+        self,
+        points: Sequence[Point],
+        image_height: int,
+        min_y_span_ratio: float | None = None,
+        degree: int | None = None,
+    ):
         if len(points) < self.config.min_points_per_lane:
             return None
         xs = np.array([p[0] for p in points], dtype=np.float64)
         ys = np.array([p[1] for p in points], dtype=np.float64)
-        if ys.max() - ys.min() < image_height * self.config.min_valid_y_span_ratio:
+        min_span = self.config.min_valid_y_span_ratio if min_y_span_ratio is None else min_y_span_ratio
+        if image_height > 1 and ys.max() - ys.min() < image_height * min_span:
+            return None
+        unique_y = np.unique(ys)
+        fit_degree = min(self.config.curve_fit_degree if degree is None else degree, len(unique_y) - 1)
+        if fit_degree < 1:
             return None
         try:
-            return np.polyfit(ys, xs, deg=1)
+            fit = np.polyfit(ys, xs, deg=fit_degree)
+            if self.config.fit_outlier_rejection_px > 0 and len(xs) > fit_degree + 3:
+                residual = np.abs(np.polyval(fit, ys) - xs)
+                keep = residual <= self.config.fit_outlier_rejection_px
+                if int(np.count_nonzero(keep)) >= max(self.config.min_points_per_lane, fit_degree + 1):
+                    fit = np.polyfit(ys[keep], xs[keep], deg=fit_degree)
+            return fit
         except np.linalg.LinAlgError:
             return None
 
@@ -237,7 +355,7 @@ class YOLOLaneDetector:
     def _x_at_y(fit, y: float) -> float | None:
         if fit is None:
             return None
-        return float(fit[0] * y + fit[1])
+        return float(np.polyval(fit, y))
 
     def _select_left_right_fits(self, fits, frame_center_x: float, near_y: int):
         left_candidates = []
@@ -302,13 +420,32 @@ class YOLOLaneDetector:
             combined[mask > 0.5] = 255
         return combined
 
-    def _annotate(self, frame, lanes, left_fit, right_fit, center_near, center_far, near_y, far_y, confidence, transform=None):
+    def _solidified_lanes_from_fits(self, fits, image_height: int, image_width: int, near_y: int, far_y: int) -> list[list[Point]]:
+        lanes = []
+        step = max(1, int(self.config.solidify_step_px))
+        for fit in fits:
+            if fit is None:
+                continue
+            lane = []
+            for y in range(int(far_y), int(near_y) + 1, step):
+                x = int(clamp(self._x_at_y(fit, y), 0, image_width - 1))
+                lane.append((x, y))
+            if lane and lane[-1][1] != near_y:
+                x = int(clamp(self._x_at_y(fit, near_y), 0, image_width - 1))
+                lane.append((x, near_y))
+            lanes.append(lane)
+        return lanes
+
+    def _annotate(self, frame, lanes, lane_fragments, left_fit, right_fit, center_near, center_far, near_y, far_y, confidence, transform=None):
         vis = frame.copy()
         if transform is not None:
             transform.draw_overlay(vis)
-        for lane in lanes:
+        for lane in lane_fragments:
             for point in lane:
-                cv2.circle(vis, point, 2, (0, 255, 255), -1)
+                cv2.circle(vis, point, 1, (0, 255, 255), -1)
+        for lane in lanes:
+            if len(lane) >= 2:
+                cv2.polylines(vis, [np.array(lane, dtype=np.int32)], isClosed=False, color=(255, 255, 0), thickness=2)
         self._draw_fit(vis, left_fit, near_y, far_y, (0, 255, 0))
         self._draw_fit(vis, right_fit, near_y, far_y, (0, 255, 0))
         h, w = vis.shape[:2]
@@ -326,4 +463,12 @@ class YOLOLaneDetector:
         h, w = image.shape[:2]
         x_near = int(clamp(self._x_at_y(fit, near_y), 0, w - 1))
         x_far = int(clamp(self._x_at_y(fit, far_y), 0, w - 1))
-        cv2.line(image, (x_near, near_y), (x_far, far_y), color, 3)
+        points = []
+        step = max(1, int(self.config.solidify_step_px))
+        for y in range(int(far_y), int(near_y) + 1, step):
+            x = int(clamp(self._x_at_y(fit, y), 0, w - 1))
+            points.append((x, y))
+        if len(points) >= 2:
+            cv2.polylines(image, [np.array(points, dtype=np.int32)], isClosed=False, color=color, thickness=3)
+        else:
+            cv2.line(image, (x_near, near_y), (x_far, far_y), color, 3)
