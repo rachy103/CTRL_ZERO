@@ -14,10 +14,10 @@ ctrl_zero/
   logger.py                          # CSV와 프레임 저장
   ui.py                              # 화면 오버레이
   vision/
+    preprocess.py                    # ROI crop, Bird-eye view 전처리
     classical_lane.py                # OpenCV 차선 검출 fallback
-    ufldv2.py                        # UFLDv2 ResNet34 CPU 추론 어댑터
+    yolo_lane.py                     # YOLO 차선 검출/세그멘테이션 어댑터
 arduino/CTRL_ZERO_Controller/        # Arduino 업로드용 펌웨어
-scripts/download_ufldv2_weights.py   # 공식 pretrained weight 다운로드
 scripts/smoke_test.py                # 카메라 없이 실행 가능한 최소 검증
 docs/                                # 하드웨어, 모델, 튜닝 문서
 ```
@@ -33,15 +33,15 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-## 모델 다운로드
+## YOLO 차선 모델
 
-기존 작업의 Tusimple ResNet18 대신, 기본값은 UFLDv2 공식 CULane ResNet34입니다. ResNet34는 ResNet18보다 깊고, CULane 기준 공식 F1도 더 높습니다.
+`main` 브랜치는 YOLO backend를 기본값으로 사용합니다. 단, 일반 COCO YOLO 모델은 차선 클래스를 학습하지 않았으므로 차선을 잡지 못합니다. 차선으로 학습된 Ultralytics YOLO `.pt` 파일을 준비해 아래 경로에 둡니다.
 
-```powershell
-python scripts\download_ufldv2_weights.py --model culane_res34
+```text
+models/yolo/lane.pt
 ```
 
-다운로드 파일은 `models/ufldv2/culane_res34.pth`에 저장됩니다. 모델 파일은 GitHub에 커밋하지 않습니다.
+다른 위치에 있다면 실행 시 `--yolo-model`로 지정합니다.
 
 ## 실행
 
@@ -51,10 +51,16 @@ python scripts\download_ufldv2_weights.py --model culane_res34
 python main.py --mode vision --backend opencv
 ```
 
-ResNet34 모델을 받은 뒤 딥러닝 차선 인식을 확인합니다.
+YOLO 차선 모델을 확인합니다.
 
 ```powershell
-python main.py --mode vision --backend ufldv2
+python main.py --mode vision --backend yolo --yolo-model models\yolo\lane.pt
+```
+
+ROI crop은 기본으로 켜져 있습니다. Bird-eye view는 카메라 각도에 맞춰 기준점을 잡아야 하므로 기본값은 꺼져 있고, 필요할 때 켭니다.
+
+```powershell
+python main.py --mode vision --backend yolo --bird-eye --yolo-model models\yolo\lane.pt
 ```
 
 Arduino 포트를 확인합니다.
@@ -72,7 +78,7 @@ python main.py --mode manual --backend opencv --arduino-port COM3
 자동 주행입니다.
 
 ```powershell
-python main.py --mode auto --backend ufldv2 --arduino-port COM3
+python main.py --mode auto --backend yolo --yolo-model models\yolo\lane.pt --arduino-port COM3
 ```
 
 ## 튜닝 방식
@@ -80,8 +86,10 @@ python main.py --mode auto --backend ufldv2 --arduino-port COM3
 튜닝 파라미터는 `main.py` 상단 `USER TUNING PARAMETERS` 영역에 모아두었습니다.
 
 - `CAMERA_INDEX`, `CAMERA_BACKEND`: 카메라 장치 선택
-- `LANE_BACKEND`: `ufldv2` 또는 `opencv`
-- `UFLDV2_CONFIG_PATH`, `UFLDV2_MODEL_PATH`: 딥러닝 차선 모델 선택
+- `LANE_BACKEND`: `yolo` 또는 `opencv`
+- `YOLO_MODEL_PATH`, `YOLO_IMAGE_SIZE`, `YOLO_CONFIDENCE`: YOLO 차선 모델 선택
+- `ROI_TOP_RATIO`, `ROI_LEFT_RATIO`, `ROI_RIGHT_RATIO`: YOLO 입력에서 실제 도로 영역만 crop
+- `BIRD_EYE_ENABLED`, `BIRD_EYE_SRC_*`: Bird-eye view 원근 변환 기준점
 - `BASE_SPEED`, `MAX_SPEED`: 기본 속도와 최대 속도
 - `KP_OFFSET`, `KP_HEADING`, `KD_OFFSET`: 조향 제어 게인
 - `USE_LIDAR`, `LIDAR_STOP_DISTANCE_MM`, `LIDAR_SLOW_DISTANCE_MM`: 장애물 감속/정지

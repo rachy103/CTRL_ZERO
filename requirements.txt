@@ -5,4 +5,5 @@ rplidar-roboticia>=0.9.5
 requests>=2.31
 torch>=2.0
 torchvision>=0.15
+ultralytics>=8.3
 pytest>=7.0
