@@ -101,6 +101,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("vision", "manual", "auto"), default=RUN_MODE)
     parser.add_argument("--backend", choices=("ufldv2", "opencv"), default=LANE_BACKEND)
     parser.add_argument("--camera-index", type=int, default=CAMERA_INDEX)
+    parser.add_argument("--camera-backend", choices=("dshow", "msmf", "any"), default=CAMERA_BACKEND)
+    parser.add_argument("--camera-width", type=int, default=CAMERA_WIDTH)
+    parser.add_argument("--camera-height", type=int, default=CAMERA_HEIGHT)
+    parser.add_argument("--camera-fps", type=int, default=CAMERA_FPS)
     parser.add_argument("--arduino-port", default=ARDUINO_PORT)
     parser.add_argument("--no-arduino", action="store_true")
     parser.add_argument("--list-ports", action="store_true")
@@ -156,10 +160,10 @@ def main() -> None:
     camera = CameraReader(
         CameraConfig(
             index=args.camera_index,
-            backend=CAMERA_BACKEND,
-            width=CAMERA_WIDTH,
-            height=CAMERA_HEIGHT,
-            fps=CAMERA_FPS,
+            backend=args.camera_backend,
+            width=args.camera_width,
+            height=args.camera_height,
+            fps=args.camera_fps,
         )
     )
     motor = ArduinoMotorController(

@@ -29,7 +29,7 @@ class CameraReader:
         if not capture.isOpened():
             raise RuntimeError(
                 f"Could not open camera index={self.config.index}, backend={self.config.backend}. "
-                "Try another CAMERA_INDEX or CAMERA_BACKEND in main.py."
+                "Try --camera-index 0, --camera-backend any, or run scripts\\probe_cameras.py."
             )
 
         if self.config.width > 0:
