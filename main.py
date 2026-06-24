@@ -26,10 +26,10 @@ BASE_DIR = Path(__file__).resolve().parent
 # Runtime mode: "vision"은 모터 미출력, "manual"은 키보드 수동, "auto"는 차선+라이다 자동 주행입니다.
 RUN_MODE = "auto"
 LANE_BACKEND = "ufldv2"  # "ufldv2" 또는 "opencv"
-UFLDV2_MODEL_NAME = "culane_res34"
+UFLDV2_MODEL_NAME = "tusimple_res18"
 
 # Camera
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 CAMERA_BACKEND = "dshow"  # Windows: "dshow" 권장. 필요 시 "msmf" 또는 "any".
 CAMERA_WIDTH = 0
 CAMERA_HEIGHT = 0
@@ -56,12 +56,12 @@ UFLDV2_REPO_DIR = BASE_DIR / "third_party" / "ultra-fast-lane-detection-v2"
 UFLDV2_CONFIG_PATH = UFLDV2_REPO_DIR / "configs" / "culane_res34.py"
 UFLDV2_MODEL_PATH = BASE_DIR / "models" / "ufldv2" / "culane_res34.pth"
 UFLDV2_DEVICE = "cpu"
-UFLDV2_TORCH_THREADS = 4
+UFLDV2_TORCH_THREADS = 8
 UFLDV2_SHOW_RAW_POINTS = True
 UFLDV2_FRAME_SKIP = 1  # 1=every frame, 2=every other frame, 3=one inference per 3 frames.
 UFLDV2_MIN_POINTS_PER_LANE = 4
-UFLDV2_MIN_VALID_Y_SPAN_RATIO = 0.10
-UFLDV2_ROW_VALID_MIN_FRACTION = 0.30
+UFLDV2_MIN_VALID_Y_SPAN_RATIO = 0.05
+UFLDV2_ROW_VALID_MIN_FRACTION = 0.1
 UFLDV2_COL_VALID_MIN_FRACTION = 0.18
 
 UFLDV2_MODEL_PROFILES = {
@@ -81,15 +81,15 @@ OPENCV_CANNY_HIGH = 150
 OPENCV_HOUGH_THRESHOLD = 35
 
 # Shared lane geometry
-DEFAULT_LANE_WIDTH_RATIO = 0.48
-MIN_LANE_WIDTH_RATIO = 0.22
-MAX_LANE_WIDTH_RATIO = 0.88
+DEFAULT_LANE_WIDTH_RATIO = 0.50
+MIN_LANE_WIDTH_RATIO = 0.35
+MAX_LANE_WIDTH_RATIO = 0.65
 
 # Driving controller. Positive steer means right.
 BASE_SPEED = 45
 MAX_SPEED = 80
 MIN_LANE_CONFIDENCE_TO_DRIVE = 0.45
-KP_OFFSET = 78.0
+KP_OFFSET = 120.0
 KP_HEADING = 32.0
 KD_OFFSET = 18.0
 HEADING_NORM_DEG = 28.0
