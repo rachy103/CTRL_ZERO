@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import html
+import re
 from pathlib import Path
+from urllib.parse import urljoin
 
 import requests
 
@@ -58,6 +61,11 @@ def download_google_drive_file(file_id: str, destination: Path) -> None:
             timeout=30,
         )
         response.raise_for_status()
+    elif _looks_like_html(response):
+        confirm_url, params = _confirm_form(response.text, response.url)
+        if confirm_url and params:
+            response = session.get(confirm_url, params=params, stream=True, timeout=30)
+            response.raise_for_status()
 
     total = int(response.headers.get("content-length", "0") or "0")
     downloaded = 0
@@ -73,6 +81,7 @@ def download_google_drive_file(file_id: str, destination: Path) -> None:
     print()
 
     if destination.stat().st_size < 1024 * 1024:
+        destination.unlink(missing_ok=True)
         raise RuntimeError(
             f"Downloaded file is unexpectedly small: {destination}. "
             "Google Drive may have returned an HTML warning page instead of the checkpoint."
@@ -86,6 +95,23 @@ def _confirm_token(response: requests.Response) -> str | None:
     return None
 
 
+def _looks_like_html(response: requests.Response) -> bool:
+    content_type = response.headers.get("content-type", "").lower()
+    return "text/html" in content_type
+
+
+def _confirm_form(text: str, base_url: str) -> tuple[str | None, dict[str, str] | None]:
+    form_match = re.search(r'<form[^>]+id="download-form"[^>]+action="([^"]+)"[^>]*>(.*?)</form>', text, re.DOTALL)
+    if not form_match:
+        return None, None
+
+    action = html.unescape(form_match.group(1))
+    form_body = form_match.group(2)
+    inputs = re.findall(r'<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"', form_body)
+    params = {html.unescape(name): html.unescape(value) for name, value in inputs}
+    return urljoin(base_url, action), params
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download official UFLDv2 checkpoints.")
     parser.add_argument("--model", choices=sorted(MODEL_ZOO), default="culane_res34")
@@ -95,8 +121,12 @@ def main() -> None:
     model = MODEL_ZOO[args.model]
     destination = args.output_dir / model["filename"]
     if destination.exists():
-        print(f"Already exists: {destination}")
-        return
+        size = destination.stat().st_size
+        if size >= 1024 * 1024:
+            print(f"Already exists: {destination}")
+            return
+        print(f"Removing incomplete download: {destination} ({size} bytes)")
+        destination.unlink()
 
     print(f"Downloading {args.model} (official reported F1={model['f1']}) to {destination}")
     download_google_drive_file(model["file_id"], destination)
