@@ -25,7 +25,7 @@ def synthetic_lane_frame() -> np.ndarray:
 def main() -> int:
     detector = ClassicalLaneDetector(ClassicalLaneConfig(resize_width=640))
     lane = detector.detect(synthetic_lane_frame())
-    controller = DriveController(DriveConfig(base_speed=45, max_speed=80, min_confidence=0.30))
+    controller = DriveController(DriveConfig(min_speed=35, max_speed=80, min_confidence=0.30))
     command = controller.compute(lane, None, "auto")
 
     scan = np.array([[350.0, 800.0], [10.0, 700.0], [180.0, 250.0]], dtype=np.float32)

@@ -7,7 +7,7 @@ from ctrl_zero.lidar import ObstacleDecision
 from ctrl_zero.vision.base import LaneDetection
 
 
-def lane(offset_norm=0.0, confidence=0.8, heading_deg=0.0):
+def lane(offset_norm=0.0, confidence=0.8, heading_deg=0.0, curvature=0.0):
     return LaneDetection(
         lanes=[],
         left_fit=None,
@@ -22,25 +22,45 @@ def lane(offset_norm=0.0, confidence=0.8, heading_deg=0.0):
         confidence=confidence,
         mask=None,
         annotated=np.zeros((10, 10, 3), dtype=np.uint8),
+        curvature=curvature,
     )
 
 
-def test_low_confidence_stops_auto_mode():
+def test_low_confidence_holds_when_no_previous_command():
     controller = DriveController(DriveConfig(min_confidence=0.5))
     command = controller.compute(lane(confidence=0.2), None, "auto")
     assert command.speed == 0
-    assert command.reason == "low_lane_confidence"
+    assert command.reason == "lane_hold"
 
 
 def test_positive_offset_steers_right():
-    controller = DriveController(DriveConfig(base_speed=50, min_confidence=0.1, kp_offset=80.0, kp_heading=0.0, kd_offset=0.0))
+    controller = DriveController(DriveConfig(min_confidence=0.1))
     command = controller.compute(lane(offset_norm=0.25), None, "auto")
     assert command.steer > 0
     assert command.speed > 0
 
 
+def test_curvature_feedforward_uses_expected_sign():
+    right = DriveController(DriveConfig(min_confidence=0.1)).compute(lane(curvature=0.004), None, "auto")
+    left = DriveController(DriveConfig(min_confidence=0.1)).compute(lane(curvature=-0.004), None, "auto")
+    assert right.steer > 0
+    assert left.steer < 0
+
+
+def test_curvature_reduces_settled_speed():
+    straight_controller = DriveController(DriveConfig(min_confidence=0.1))
+    curve_controller = DriveController(DriveConfig(min_confidence=0.1))
+    straight = None
+    curve = None
+    for _ in range(30):
+        straight = straight_controller.compute(lane(curvature=0.0), None, "auto")
+        curve = curve_controller.compute(lane(curvature=0.004), None, "auto")
+    assert straight is not None and curve is not None
+    assert curve.speed < straight.speed
+
+
 def test_lidar_stop_overrides_speed():
-    controller = DriveController(DriveConfig(base_speed=50, min_confidence=0.1))
+    controller = DriveController(DriveConfig(min_confidence=0.1))
     obstacle = ObstacleDecision(nearest_front_mm=300.0, speed_scale=0.0, should_stop=True, front_points=5)
     command = controller.compute(lane(), obstacle, "auto")
     assert command.speed == 0

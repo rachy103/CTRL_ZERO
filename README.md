@@ -98,8 +98,8 @@ python main.py --mode auto --backend yolo --yolo-model models\yolo\lane.pt --ard
 - `YOLO_MODEL_PATH`, `YOLO_IMAGE_SIZE`, `YOLO_CONFIDENCE`: YOLO 차선 모델 선택
 - `ROI_TOP_RATIO`, `ROI_LEFT_RATIO`, `ROI_RIGHT_RATIO`: YOLO 입력에서 실제 도로 영역만 crop
 - `BIRD_EYE_ENABLED`, `BIRD_EYE_SRC_*`: Bird-eye view 원근 변환 기준점
-- `BASE_SPEED`, `MAX_SPEED`: 기본 속도와 최대 속도
-- `KP_OFFSET`, `KP_HEADING`, `KD_OFFSET`: 조향 제어 게인
+- `MIN_SPEED`, `MAX_SPEED`, `CURVE_SPEED_GAIN`, `KAPPA_REF`: 곡률 기반 속도 제어
+- `K_STANLEY`, `HEADING_GAIN`, `CURVATURE_FF_GAIN`, `STEER_SCALE`: Stanley + 곡률 feed-forward 조향 제어
 - `USE_LIDAR`, `LIDAR_STOP_DISTANCE_MM`, `LIDAR_SLOW_DISTANCE_MM`: 장애물 감속/정지
 - `USE_ARDUINO`, `ARDUINO_PORT`: 모터 출력 여부와 포트
 

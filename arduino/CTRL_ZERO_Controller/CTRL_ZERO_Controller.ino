@@ -1,39 +1,62 @@
-// CTRL_ZERO Arduino motor controller.
+// CTRL_ZERO Arduino motor controller for Arduino Mega 2560.
 //
 // Serial protocol from Python:
 //   steer,speed\n
-//   steer: -100..100, positive means right
-//   speed: -DRIVE_MAX_PWM..DRIVE_MAX_PWM, positive means forward
+//   steer: -100..100, positive means right target angle
+//   speed: -255..255, positive means forward
 
-const int MOTOR1_IN1 = 2;
-const int MOTOR1_IN2 = 3;
-const int MOTOR2_IN1 = 4;
-const int MOTOR2_IN2 = 5;
+const int DRIVE_L_IN1 = 2;
+const int DRIVE_L_IN2 = 3;
+const int DRIVE_R_IN1 = 4;
+const int DRIVE_R_IN2 = 5;
 const int STEER_IN1 = 6;
 const int STEER_IN2 = 7;
+const int STEER_POT = A5;
 
-const bool MOTOR1_INVERTED = true;
-const bool MOTOR2_INVERTED = true;
+const bool DRIVE_L_INVERTED = true;
+const bool DRIVE_R_INVERTED = true;
 const bool STEER_INVERTED = false;
 
-const int DRIVE_MAX_PWM = 160;
-const int STEER_MAX_PWM = 180;
-const int STEER_MIN_PWM = 140;
-const int DRIVE_DEADBAND_PWM = 8;
-const int STEER_DEADBAND = 8;
-const unsigned long COMMAND_TIMEOUT_MS = 350;
+// 가변저항 값 범위: 사용자가 실측한 딱 엣지값.
+const int POT_LEFT = 569;
+const int POT_RIGHT = 447;
+const int POT_MIN_SAFE = 447;
+const int POT_MAX_SAFE = 569;
 
-String inputLine = "";
+const float STEER_KP = 2.2f;
+const float STEER_KI = 0.0f;
+const float STEER_KD = 0.35f;
+const int STEER_FF_PWM = 55;
+const int STEER_MAX_PWM = 255;
+const int STEER_DEADBAND_CNT = 6;
+const float STEER_SLEW_PER_MS = 0.9f;
+
+const int DRIVE_MAX_PWM = 255;
+const int DRIVE_DEADBAND_PWM = 8;
+const unsigned long COMMAND_TIMEOUT_MS = 150;
+
+char inputBuf[40];
+uint8_t inputLen = 0;
+
+float targetSteer = 0.0f;
+float desiredSteer = 0.0f;
+int driveCmdPwm = 0;
+
+float steerIntegral = 0.0f;
+int lastPotErr = 0;
 unsigned long lastCommandMs = 0;
+unsigned long lastLoopMs = 0;
 
 void setup() {
-  Serial.begin(9600);
-  pinMode(MOTOR1_IN1, OUTPUT);
-  pinMode(MOTOR1_IN2, OUTPUT);
-  pinMode(MOTOR2_IN1, OUTPUT);
-  pinMode(MOTOR2_IN2, OUTPUT);
+  Serial.begin(115200);
+  pinMode(DRIVE_L_IN1, OUTPUT);
+  pinMode(DRIVE_L_IN2, OUTPUT);
+  pinMode(DRIVE_R_IN1, OUTPUT);
+  pinMode(DRIVE_R_IN2, OUTPUT);
   pinMode(STEER_IN1, OUTPUT);
   pinMode(STEER_IN2, OUTPUT);
+  pinMode(STEER_POT, INPUT);
+  lastLoopMs = millis();
   holdAll();
 }
 
@@ -41,84 +64,124 @@ void loop() {
   while (Serial.available() > 0) {
     char c = Serial.read();
     if (c == '\n') {
-      parseCommand(inputLine);
-      inputLine = "";
-    } else if (c != '\r' && inputLine.length() < 32) {
-      inputLine += c;
+      inputBuf[inputLen] = '\0';
+      parseCommand(inputBuf);
+      inputLen = 0;
+    } else if (c != '\r' && inputLen < sizeof(inputBuf) - 1) {
+      inputBuf[inputLen++] = c;
+    } else if (inputLen >= sizeof(inputBuf) - 1) {
+      inputLen = 0;
     }
   }
 
-  if (millis() - lastCommandMs > COMMAND_TIMEOUT_MS) {
-    holdAll();
-  }
-}
-
-void parseCommand(String line) {
-  int comma = line.indexOf(',');
-  if (comma < 0) {
+  unsigned long now = millis();
+  float dt = now - lastLoopMs;
+  if (dt < 1) {
     return;
   }
+  lastLoopMs = now;
 
-  int steer = constrain(line.substring(0, comma).toInt(), -100, 100);
-  int speed = constrain(line.substring(comma + 1).toInt(), -DRIVE_MAX_PWM, DRIVE_MAX_PWM);
+  if (now - lastCommandMs > COMMAND_TIMEOUT_MS) {
+    desiredSteer = 0.0f;
+    driveCmdPwm = 0;
+  }
 
-  setDriveMotor(MOTOR1_IN1, MOTOR1_IN2, speed, MOTOR1_INVERTED);
-  setDriveMotor(MOTOR2_IN1, MOTOR2_IN2, speed, MOTOR2_INVERTED);
-  setSteerMotor(steer);
+  float maxStep = STEER_SLEW_PER_MS * dt;
+  float diff = desiredSteer - targetSteer;
+  if (diff > maxStep) diff = maxStep;
+  if (diff < -maxStep) diff = -maxStep;
+  targetSteer += diff;
+
+  updateSteerPID(dt);
+  applyDrive(driveCmdPwm);
+}
+
+void parseCommand(char* line) {
+  char* comma = strchr(line, ',');
+  if (comma == NULL) return;
+  *comma = '\0';
+  int steer = atoi(line);
+  int speed = atoi(comma + 1);
+  desiredSteer = constrain(steer, -100, 100);
+  driveCmdPwm = constrain(speed, -DRIVE_MAX_PWM, DRIVE_MAX_PWM);
   lastCommandMs = millis();
 }
 
-void setDriveMotor(int in1, int in2, int pwm, bool inverted) {
-  if (inverted) {
-    pwm = -pwm;
-  }
-
-  if (pwm > DRIVE_DEADBAND_PWM) {
-    hBridgeForward(in1, in2, pwm);
-  } else if (pwm < -DRIVE_DEADBAND_PWM) {
-    hBridgeBackward(in1, in2, -pwm);
-  } else {
-    hBridgeHold(in1, in2);
-  }
+int steerToPotTarget(float steer) {
+  float t = (steer + 100.0f) / 200.0f;
+  float raw = POT_LEFT + t * (POT_RIGHT - POT_LEFT);
+  return (int)constrain(raw, POT_MIN_SAFE, POT_MAX_SAFE);
 }
 
-void setSteerMotor(int steer) {
-  if (STEER_INVERTED) {
-    steer = -steer;
-  }
+void updateSteerPID(float dt) {
+  int pot = analogRead(STEER_POT);
+  int potTarget = steerToPotTarget(targetSteer);
+  int err = potTarget - pot;
 
-  if (abs(steer) <= STEER_DEADBAND) {
+  if (abs(err) <= STEER_DEADBAND_CNT) {
+    steerIntegral = 0.0f;
+    lastPotErr = err;
     hBridgeHold(STEER_IN1, STEER_IN2);
     return;
   }
 
-  int steerPwm = map(abs(steer), STEER_DEADBAND, 100, STEER_MIN_PWM, STEER_MAX_PWM);
-  steerPwm = constrain(steerPwm, STEER_MIN_PWM, STEER_MAX_PWM);
+  steerIntegral += err * dt;
+  steerIntegral = constrain(steerIntegral, -20000.0f, 20000.0f);
+  float deriv = (err - lastPotErr) / dt;
+  lastPotErr = err;
 
-  if (steer > 0) {
-    hBridgeForward(STEER_IN1, STEER_IN2, steerPwm);
+  float u = STEER_KP * err + STEER_KI * steerIntegral + STEER_KD * deriv;
+  int dir = (u >= 0) ? 1 : -1;
+  int pwm = (int)fabs(u) + STEER_FF_PWM;
+  pwm = constrain(pwm, 0, STEER_MAX_PWM);
+
+  driveSteer(dir, pwm);
+}
+
+void driveSteer(int dir, int pwm) {
+  if (STEER_INVERTED) dir = -dir;
+  if (dir > 0) {
+    hBridgeDrive(STEER_IN1, STEER_IN2, pwm);
   } else {
-    hBridgeBackward(STEER_IN1, STEER_IN2, steerPwm);
+    hBridgeDrive(STEER_IN1, STEER_IN2, -pwm);
   }
 }
 
-void hBridgeForward(int in1, int in2, int pwm) {
-  analogWrite(in1, constrain(pwm, 0, 255));
-  digitalWrite(in2, LOW);
+void applyDrive(int pwm) {
+  applyOneDrive(DRIVE_L_IN1, DRIVE_L_IN2, pwm, DRIVE_L_INVERTED);
+  applyOneDrive(DRIVE_R_IN1, DRIVE_R_IN2, pwm, DRIVE_R_INVERTED);
 }
 
-void hBridgeBackward(int in1, int in2, int pwm) {
-  digitalWrite(in1, LOW);
-  analogWrite(in2, constrain(pwm, 0, 255));
+void applyOneDrive(int in1, int in2, int pwm, bool inverted) {
+  if (inverted) pwm = -pwm;
+  if (abs(pwm) <= DRIVE_DEADBAND_PWM) {
+    hBridgeHold(in1, in2);
+    return;
+  }
+  hBridgeDrive(in1, in2, pwm);
+}
+
+void hBridgeDrive(int in1, int in2, int pwm) {
+  pwm = constrain(pwm, -255, 255);
+  if (pwm > 0) {
+    analogWrite(in1, pwm);
+    analogWrite(in2, 0);
+  } else if (pwm < 0) {
+    analogWrite(in1, 0);
+    analogWrite(in2, -pwm);
+  } else {
+    analogWrite(in1, 0);
+    analogWrite(in2, 0);
+  }
 }
 
 void hBridgeHold(int in1, int in2) {
-  digitalWrite(in1, LOW);
-  digitalWrite(in2, LOW);
+  analogWrite(in1, 0);
+  analogWrite(in2, 0);
 }
 
 void holdAll() {
-  hBridgeHold(MOTOR1_IN1, MOTOR1_IN2);
-  hBridgeHold(MOTOR2_IN1, MOTOR2_IN2);
+  hBridgeHold(DRIVE_L_IN1, DRIVE_L_IN2);
+  hBridgeHold(DRIVE_R_IN1, DRIVE_R_IN2);
   hBridgeHold(STEER_IN1, STEER_IN2);
 }

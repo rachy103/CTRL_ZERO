@@ -23,6 +23,7 @@ class LaneDetection:
     confidence: float
     mask: np.ndarray | None
     annotated: np.ndarray
+    curvature: float = 0.0
 
     @property
     def has_center(self) -> bool:

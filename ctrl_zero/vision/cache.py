@@ -61,6 +61,7 @@ def reuse_detection_on_frame(frame, previous: LaneDetection, confidence_scale: f
         confidence=max(0.0, previous.confidence * confidence_scale),
         mask=previous.mask,
         annotated=annotated,
+        curvature=previous.curvature,
     )
 
 

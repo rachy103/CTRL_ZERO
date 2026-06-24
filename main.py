@@ -38,8 +38,8 @@ CAMERA_FPS = 0
 # Arduino / motor
 USE_ARDUINO = True
 ARDUINO_PORT = "auto"
-ARDUINO_BAUDRATE = 9600
-DRIVE_MAX_PWM = 220
+ARDUINO_BAUDRATE = 115200
+DRIVE_MAX_PWM = 255
 
 # LiDAR
 USE_LIDAR = False
@@ -95,17 +95,23 @@ DEFAULT_LANE_WIDTH_RATIO = 0.50
 MIN_LANE_WIDTH_RATIO = 0.35
 MAX_LANE_WIDTH_RATIO = 0.65
 
-# Driving controller. Positive steer means right.
-BASE_SPEED = 45
+# Stanley + curvature feed-forward driving controller. Positive steer means right.
+MIN_SPEED = 35
 MAX_SPEED = 80
 MIN_LANE_CONFIDENCE_TO_DRIVE = 0.45
-KP_OFFSET = 120.0
-KP_HEADING = 32.0
-KD_OFFSET = 18.0
-HEADING_NORM_DEG = 28.0
+CURVE_SPEED_GAIN = 3.0
+KAPPA_REF = 0.0015
+WHEELBASE_PX = 220.0
+K_STANLEY = 1.6
+HEADING_GAIN = 1.0
+CURVATURE_FF_GAIN = 1.0
+STEER_SCALE = 100.0
 MAX_STEER = 100
 REVERSE_STEER = False
-CURVE_SPEED_REDUCTION = 0.55
+STEER_SLEW_BASE = 18.0
+STEER_SLEW_MIN = 8.0
+MAX_HOLD_FRAMES = 6
+HOLD_DECEL_STEP = 6
 
 # Manual mode
 MANUAL_SPEED_STEP = 10
@@ -253,16 +259,22 @@ def main() -> None:
     )
     controller = DriveController(
         DriveConfig(
-            base_speed=BASE_SPEED,
+            min_speed=MIN_SPEED,
             max_speed=MAX_SPEED,
+            curve_speed_gain=CURVE_SPEED_GAIN,
+            kappa_ref=KAPPA_REF,
+            wheelbase_px=WHEELBASE_PX,
+            k_stanley=K_STANLEY,
+            heading_gain=HEADING_GAIN,
+            ff_gain=CURVATURE_FF_GAIN,
+            steer_scale=STEER_SCALE,
             min_confidence=MIN_LANE_CONFIDENCE_TO_DRIVE,
-            kp_offset=KP_OFFSET,
-            kp_heading=KP_HEADING,
-            kd_offset=KD_OFFSET,
-            heading_norm_deg=HEADING_NORM_DEG,
             max_steer=MAX_STEER,
             reverse_steer=REVERSE_STEER,
-            curve_speed_reduction=CURVE_SPEED_REDUCTION,
+            steer_slew_base=STEER_SLEW_BASE,
+            steer_slew_min=STEER_SLEW_MIN,
+            max_hold_frames=MAX_HOLD_FRAMES,
+            hold_decel_step=HOLD_DECEL_STEP,
         )
     )
 
@@ -293,7 +305,7 @@ def main() -> None:
             lidar.open()
         logger.open()
 
-        print("Keys: q quit, space stop, +/- base speed, l toggle log.")
+        print("Keys: q quit, space stop, +/- max speed, l toggle log.")
         print("Manual mode keys: w/s speed, a/d steer pulse, c center steer.")
         print(f"Runtime: mode={args.mode}, backend={args.backend}, motor={'on' if motor_enabled else 'dry'}")
 
@@ -350,9 +362,9 @@ def main() -> None:
                 manual_steer_until = 0.0
                 motor.stop()
             elif key in (ord("+"), ord("=")):
-                controller.config.base_speed = int(clamp(controller.config.base_speed + 5, 0, MAX_SPEED))
+                controller.config.max_speed = int(clamp(controller.config.max_speed + 5, 0, MAX_SPEED))
             elif key in (ord("-"), ord("_")):
-                controller.config.base_speed = int(clamp(controller.config.base_speed - 5, 0, MAX_SPEED))
+                controller.config.max_speed = int(clamp(controller.config.max_speed - 5, MIN_SPEED, MAX_SPEED))
             elif key == ord("l"):
                 logger.set_enabled(not logger.config.enabled)
                 print(f"Logging {'enabled' if logger.config.enabled else 'disabled'}")

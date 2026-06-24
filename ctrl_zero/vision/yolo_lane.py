@@ -23,6 +23,7 @@ class YOLOLaneConfig:
     class_names: tuple[str, ...] = ("lane", "left_lane", "right_lane", "center_lane", "dashed_lane", "solid_lane", "road_line", "line")
     control_near_y_ratio: float = 0.95
     control_far_y_ratio: float = 0.68
+    curve_lookahead_ratio: float = 0.45
     mask_sample_step_px: int = 6
     min_points_per_lane: int = 3
     min_valid_y_span_ratio: float = 0.08
@@ -136,6 +137,10 @@ class YOLOLaneDetector:
         if center_near is not None and center_far is not None:
             heading_deg = math.degrees(math.atan2(center_far - center_near, max(near_y - far_y, 1)))
 
+        center_fit = self._center_fit(left_fit, right_fit)
+        y_eval = near_y - self.config.curve_lookahead_ratio * (near_y - far_y)
+        curvature = self._curvature_from_fit(center_fit, y_eval)
+
         model_mask = self._combined_mask(result, model_h, model_w)
         mask = transform.mask_to_original(model_mask) if transform is not None else model_mask
         annotated = self._annotate(
@@ -165,6 +170,7 @@ class YOLOLaneDetector:
             confidence=confidence,
             mask=mask,
             annotated=annotated,
+            curvature=curvature,
         )
 
     @staticmethod
@@ -356,6 +362,36 @@ class YOLOLaneDetector:
         if fit is None:
             return None
         return float(np.polyval(fit, y))
+
+    @staticmethod
+    def _center_fit(left_fit, right_fit):
+        if left_fit is None and right_fit is None:
+            return None
+        if left_fit is None:
+            return np.array(right_fit, dtype=np.float64)
+        if right_fit is None:
+            return np.array(left_fit, dtype=np.float64)
+
+        left = np.array(left_fit, dtype=np.float64)
+        right = np.array(right_fit, dtype=np.float64)
+        max_len = max(len(left), len(right))
+        left = np.pad(left, (max_len - len(left), 0))
+        right = np.pad(right, (max_len - len(right), 0))
+        return (left + right) / 2.0
+
+    @staticmethod
+    def _curvature_from_fit(fit, y_eval: float) -> float:
+        if fit is None or len(fit) < 3:
+            return 0.0
+        first = np.polyder(fit, 1)
+        second = np.polyder(fit, 2)
+        xp = float(np.polyval(first, y_eval))
+        xpp = float(np.polyval(second, y_eval))
+        denom = (1.0 + xp * xp) ** 1.5
+        if denom < 1e-9:
+            return 0.0
+        kappa = xpp / denom
+        return float(kappa) if math.isfinite(kappa) else 0.0
 
     def _select_left_right_fits(self, fits, frame_center_x: float, near_y: int):
         left_candidates = []

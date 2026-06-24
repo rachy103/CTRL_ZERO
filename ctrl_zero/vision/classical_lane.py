@@ -28,6 +28,8 @@ class ClassicalLaneConfig:
     fit_smoothing: float = 0.35
     width_smoothing: float = 0.20
     max_missed_frames: int = 8
+    curve_lookahead_ratio: float = 0.45
+    min_samples_for_quad: int = 6
 
 
 class ClassicalLaneDetector:
@@ -91,6 +93,10 @@ class ClassicalLaneDetector:
         if center_near is not None and center_far is not None:
             heading_deg = math.degrees(math.atan2(center_far - center_near, max(y_near - y_far, 1)))
 
+        center_fit = self._center_fit(left_fit, right_fit)
+        y_eval = y_near - self.config.curve_lookahead_ratio * (y_near - y_far)
+        curvature = self._curvature_from_fit(center_fit, y_eval)
+
         confidence = self._confidence(left_fit, right_fit, left_detected, right_detected)
         annotated = self._annotate(frame, roi_polygon, left_fit, right_fit, center_near, center_far, y_near, y_far)
         lanes = self._fits_to_lanes((left_fit, right_fit), y_near, y_far)
@@ -109,6 +115,7 @@ class ClassicalLaneDetector:
             confidence=confidence,
             mask=roi_mask,
             annotated=annotated,
+            curvature=curvature,
         )
 
     def _lane_color_mask(self, frame: np.ndarray) -> np.ndarray:
@@ -158,17 +165,26 @@ class ClassicalLaneDetector:
                 right_samples.extend(sample)
         return left_samples, right_samples
 
-    @staticmethod
-    def _fit_x_as_function_of_y(samples):
+    def _fit_x_as_function_of_y(self, samples):
         if len(samples) < 2:
             return None
         xs = np.array([item[0] for item in samples], dtype=np.float64)
         ys = np.array([item[1] for item in samples], dtype=np.float64)
         weights = np.array([max(item[2], 1.0) for item in samples], dtype=np.float64)
-        if len(np.unique(ys)) < 2:
+        unique_y = len(np.unique(ys))
+        if unique_y < 2:
             return None
-        fit = np.polyfit(ys, xs, deg=1, w=weights)
-        return fit if np.all(np.isfinite(fit)) else None
+        use_quad = unique_y >= 3 and len(samples) >= self.config.min_samples_for_quad
+        degree = 2 if use_quad else 1
+        try:
+            fit = np.polyfit(ys, xs, deg=degree, w=weights)
+        except np.linalg.LinAlgError:
+            return None
+        if not np.all(np.isfinite(fit)):
+            return None
+        if degree == 1:
+            fit = np.array([0.0, fit[0], fit[1]], dtype=np.float64)
+        return fit
 
     def _smooth_fit(self, side: str, new_fit):
         previous = self.left_fit if side == "left" else self.right_fit
@@ -177,7 +193,7 @@ class ClassicalLaneDetector:
         detected = new_fit is not None
         if detected:
             alpha = self.config.fit_smoothing
-            smoothed = new_fit if previous is None else alpha * new_fit + (1.0 - alpha) * previous
+            smoothed = new_fit if previous is None or len(previous) != len(new_fit) else alpha * new_fit + (1.0 - alpha) * previous
             missed = 0
         else:
             missed += 1
@@ -195,7 +211,31 @@ class ClassicalLaneDetector:
     def _x_at_y(fit, y: float) -> float | None:
         if fit is None:
             return None
-        return float(fit[0] * y + fit[1])
+        return float(np.polyval(fit, y))
+
+    @staticmethod
+    def _center_fit(left_fit, right_fit):
+        if left_fit is not None and right_fit is not None:
+            return (left_fit + right_fit) / 2.0
+        if left_fit is not None:
+            return left_fit
+        if right_fit is not None:
+            return right_fit
+        return None
+
+    @staticmethod
+    def _curvature_from_fit(fit, y_eval: float) -> float:
+        if fit is None or len(fit) < 3:
+            return 0.0
+        a = float(fit[0])
+        b = float(fit[1])
+        xp = 2.0 * a * y_eval + b
+        xpp = 2.0 * a
+        denom = (1.0 + xp * xp) ** 1.5
+        if denom < 1e-9:
+            return 0.0
+        kappa = xpp / denom
+        return float(kappa) if math.isfinite(kappa) else 0.0
 
     def _update_lane_width(self, left_x, right_x, width: int):
         if self.lane_width_px is None:
@@ -239,9 +279,13 @@ class ClassicalLaneDetector:
         if fit is None:
             return
         h, w = image.shape[:2]
-        x_near = int(clamp(self._x_at_y(fit, y_near), 0, w - 1))
-        x_far = int(clamp(self._x_at_y(fit, y_far), 0, w - 1))
-        cv2.line(image, (x_near, int(y_near)), (x_far, int(y_far)), color, 3)
+        points = []
+        for y in np.linspace(y_far, y_near, 16):
+            x = self._x_at_y(fit, y)
+            if x is not None:
+                points.append((int(clamp(x, 0, w - 1)), int(y)))
+        if len(points) >= 2:
+            cv2.polylines(image, [np.array(points, dtype=np.int32)], isClosed=False, color=color, thickness=3)
 
     def _fits_to_lanes(self, fits, y_near: int, y_far: int):
         lanes = []

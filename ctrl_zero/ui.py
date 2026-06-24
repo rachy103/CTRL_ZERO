@@ -26,7 +26,7 @@ def draw_status(
     lines = [
         f"mode={mode} backend={backend} fps={fps:.1f} motor={'on' if motor_enabled else 'dry'}",
         f"steer={command.steer:+d} speed={command.speed:+d} reason={command.reason}",
-        f"conf={lane.confidence:.2f} offset={format_optional(lane.offset_norm, 3)} heading={format_optional(lane.heading_deg, 1)}",
+        f"conf={lane.confidence:.2f} offset={format_optional(lane.offset_norm, 3)} heading={format_optional(lane.heading_deg, 1)} kappa={lane.curvature:+.6f}",
         f"lanes={len(lane.lanes)} width_px={format_optional(lane.lane_width_px, 1)} lidar={lidar_text}",
     ]
     y = 24
