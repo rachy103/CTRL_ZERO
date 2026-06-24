@@ -19,6 +19,7 @@ models/**/*.pth
 models/**/*.pt
 models/**/*.onnx
 models/**/*.engine
+models/**/*_openvino_model/
 !models/**/.gitkeep
 
 # Local hardware/editor noise

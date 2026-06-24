@@ -18,6 +18,7 @@ ctrl_zero/
     classical_lane.py                # OpenCV 차선 검출 fallback
     yolo_lane.py                     # YOLO 차선 검출/세그멘테이션 어댑터
 arduino/CTRL_ZERO_Controller/        # Arduino 업로드용 펌웨어
+scripts/export_yolo_formats.py       # YOLO .pt를 ONNX/OpenVINO로 export
 scripts/smoke_test.py                # 카메라 없이 실행 가능한 최소 검증
 docs/                                # 하드웨어, 모델, 튜닝 문서
 ```
@@ -42,6 +43,13 @@ models/yolo/lane.pt
 ```
 
 다른 위치에 있다면 실행 시 `--yolo-model`로 지정합니다.
+
+ONNX나 OpenVINO 포맷도 지정할 수 있습니다. 현재 로컬에는 `yolov8n-seg.pt`, `yolov8n-seg.onnx`, `yolov8n-seg_openvino_model/`을 만들어두었습니다.
+
+```powershell
+python -m pip install -r requirements-export.txt
+python scripts\export_yolo_formats.py --model yolov8n-seg.pt
+```
 
 ## 실행
 

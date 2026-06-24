@@ -36,10 +36,10 @@ class YOLOLaneConfig:
 
 
 class YOLOLaneDetector:
-    """Lane detector for custom Ultralytics YOLO lane models.
+    """Lane detector for Ultralytics-compatible YOLO lane models.
 
     A generic COCO YOLO model is not enough because COCO does not include lane
-    markings. Use a lane-trained detection or segmentation weight.
+    markings. Use a lane-trained detection or segmentation model when driving.
     """
 
     def __init__(self, config: YOLOLaneConfig):
@@ -152,7 +152,7 @@ class YOLOLaneDetector:
         if not model_path.exists():
             raise FileNotFoundError(
                 f"YOLO lane model not found: {model_path}\n"
-                "Put a lane-trained Ultralytics YOLO .pt file at this path or pass --yolo-model C:\\path\\to\\lane.pt.\n"
+                "Pass a lane-trained Ultralytics model path, such as .pt, .onnx, or an OpenVINO export directory.\n"
                 "A generic COCO YOLO model will not detect lane markings."
             )
         try:

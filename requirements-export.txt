@@ -1,0 +1,5 @@
+ultralytics>=8.3
+onnx>=1.16
+onnxslim>=0.1
+onnxruntime>=1.18
+openvino>=2024.0
