@@ -27,6 +27,8 @@ class UFLDv2DetectorConfig:
     control_far_y_ratio: float = 0.68
     min_points_per_lane: int = 5
     min_valid_y_span_ratio: float = 0.18
+    row_valid_min_fraction: float = 0.50
+    col_valid_min_fraction: float = 0.25
     default_lane_width_ratio: float = 0.48
     min_lane_width_ratio: float = 0.22
     max_lane_width_ratio: float = 0.88
@@ -249,7 +251,7 @@ class UFLDv2LaneDetector:
         coords = []
         for lane_idx in (1, 2):
             lane = []
-            if valid_row[0, :, lane_idx].sum() > num_cls_row / 2:
+            if valid_row[0, :, lane_idx].sum() >= num_cls_row * self.config.row_valid_min_fraction:
                 for anchor_idx in range(valid_row.shape[1]):
                     if valid_row[0, anchor_idx, lane_idx]:
                         center_grid = int(max_indices_row[0, anchor_idx, lane_idx])
@@ -264,7 +266,7 @@ class UFLDv2LaneDetector:
 
         for lane_idx in (0, 3):
             lane = []
-            if valid_col[0, :, lane_idx].sum() > num_cls_col / 4:
+            if valid_col[0, :, lane_idx].sum() >= num_cls_col * self.config.col_valid_min_fraction:
                 for anchor_idx in range(valid_col.shape[1]):
                     if valid_col[0, anchor_idx, lane_idx]:
                         center_grid = int(max_indices_col[0, anchor_idx, lane_idx])

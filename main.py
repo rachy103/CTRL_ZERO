@@ -26,6 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent
 # Runtime mode: "vision"은 모터 미출력, "manual"은 키보드 수동, "auto"는 차선+라이다 자동 주행입니다.
 RUN_MODE = "auto"
 LANE_BACKEND = "ufldv2"  # "ufldv2" 또는 "opencv"
+UFLDV2_MODEL_NAME = "culane_res34"
 
 # Camera
 CAMERA_INDEX = 1
@@ -38,7 +39,7 @@ CAMERA_FPS = 0
 USE_ARDUINO = True
 ARDUINO_PORT = "auto"
 ARDUINO_BAUDRATE = 9600
-DRIVE_MAX_PWM = 160
+DRIVE_MAX_PWM = 220
 
 # LiDAR
 USE_LIDAR = False
@@ -57,6 +58,20 @@ UFLDV2_MODEL_PATH = BASE_DIR / "models" / "ufldv2" / "culane_res34.pth"
 UFLDV2_DEVICE = "cpu"
 UFLDV2_TORCH_THREADS = 4
 UFLDV2_SHOW_RAW_POINTS = True
+UFLDV2_FRAME_SKIP = 1  # 1=every frame, 2=every other frame, 3=one inference per 3 frames.
+UFLDV2_MIN_POINTS_PER_LANE = 4
+UFLDV2_MIN_VALID_Y_SPAN_RATIO = 0.10
+UFLDV2_ROW_VALID_MIN_FRACTION = 0.30
+UFLDV2_COL_VALID_MIN_FRACTION = 0.18
+
+UFLDV2_MODEL_PROFILES = {
+    "culane_res34": ("culane_res34.py", "culane_res34.pth"),
+    "culane_res18": ("culane_res18.py", "culane_res18.pth"),
+    "tusimple_res34": ("tusimple_res34.py", "tusimple_res34.pth"),
+    "tusimple_res18": ("tusimple_res18.py", "tusimple_res18.pth"),
+    "curvelanes_res34": ("curvelanes_res34.py", "curvelanes_res34.pth"),
+    "curvelanes_res18": ("curvelanes_res18.py", "curvelanes_res18.pth"),
+}
 
 # OpenCV fallback lane detector
 OPENCV_RESIZE_WIDTH = 640
@@ -100,6 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="CTRL_ZERO camera/LiDAR/Arduino autonomous driving runtime.")
     parser.add_argument("--mode", choices=("vision", "manual", "auto"), default=RUN_MODE)
     parser.add_argument("--backend", choices=("ufldv2", "opencv"), default=LANE_BACKEND)
+    parser.add_argument("--ufld-model", choices=sorted(UFLDV2_MODEL_PROFILES), default=UFLDV2_MODEL_NAME)
+    parser.add_argument("--ufld-frame-skip", type=int, default=UFLDV2_FRAME_SKIP)
+    parser.add_argument("--ufld-min-points", type=int, default=UFLDV2_MIN_POINTS_PER_LANE)
+    parser.add_argument("--ufld-min-y-span", type=float, default=UFLDV2_MIN_VALID_Y_SPAN_RATIO)
+    parser.add_argument("--ufld-row-valid-frac", type=float, default=UFLDV2_ROW_VALID_MIN_FRACTION)
+    parser.add_argument("--ufld-col-valid-frac", type=float, default=UFLDV2_COL_VALID_MIN_FRACTION)
     parser.add_argument("--camera-index", type=int, default=CAMERA_INDEX)
     parser.add_argument("--camera-backend", choices=("dshow", "msmf", "any"), default=CAMERA_BACKEND)
     parser.add_argument("--camera-width", type=int, default=CAMERA_WIDTH)
@@ -113,7 +134,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_lane_detector(backend: str):
+def resolve_ufldv2_paths(model_name: str) -> tuple[Path, Path]:
+    config_name, weight_name = UFLDV2_MODEL_PROFILES[model_name]
+    return UFLDV2_REPO_DIR / "configs" / config_name, BASE_DIR / "models" / "ufldv2" / weight_name
+
+
+def build_lane_detector(args):
+    backend = args.backend
     if backend == "opencv":
         return ClassicalLaneDetector(
             ClassicalLaneConfig(
@@ -129,20 +156,28 @@ def build_lane_detector(backend: str):
         )
 
     from ctrl_zero.vision.ufldv2 import UFLDv2DetectorConfig, UFLDv2LaneDetector
+    from ctrl_zero.vision.cache import FrameSkippingLaneDetector
 
-    return UFLDv2LaneDetector(
+    config_path, model_path = resolve_ufldv2_paths(args.ufld_model)
+
+    detector = UFLDv2LaneDetector(
         UFLDv2DetectorConfig(
             repo_dir=UFLDV2_REPO_DIR,
-            config_path=UFLDV2_CONFIG_PATH,
-            model_path=UFLDV2_MODEL_PATH,
+            config_path=config_path,
+            model_path=model_path,
             device=UFLDV2_DEVICE,
             torch_num_threads=UFLDV2_TORCH_THREADS,
+            min_points_per_lane=args.ufld_min_points,
+            min_valid_y_span_ratio=args.ufld_min_y_span,
+            row_valid_min_fraction=args.ufld_row_valid_frac,
+            col_valid_min_fraction=args.ufld_col_valid_frac,
             default_lane_width_ratio=DEFAULT_LANE_WIDTH_RATIO,
             min_lane_width_ratio=MIN_LANE_WIDTH_RATIO,
             max_lane_width_ratio=MAX_LANE_WIDTH_RATIO,
             show_raw_points=UFLDV2_SHOW_RAW_POINTS,
         )
     )
+    return FrameSkippingLaneDetector(detector, skip=args.ufld_frame_skip) if args.ufld_frame_skip > 1 else detector
 
 
 def main() -> None:
@@ -185,7 +220,7 @@ def main() -> None:
         )
     )
 
-    lane_detector = build_lane_detector(args.backend)
+    lane_detector = build_lane_detector(args)
     lidar_config = LidarConfig(
         port=LIDAR_PORT,
         front_min_angle_deg=LIDAR_FRONT_MIN_ANGLE_DEG,
