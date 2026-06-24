@@ -1,0 +1,8 @@
+numpy>=1.23
+opencv-python>=4.8
+pyserial>=3.5
+rplidar-roboticia>=0.9.5
+requests>=2.31
+torch>=2.0
+torchvision>=0.15
+pytest>=7.0

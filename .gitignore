@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Runtime output
+lane_logs/
+logs/
+captures/
+
+# Model weights are downloaded locally, not committed to GitHub.
+models/**/*.pth
+models/**/*.pt
+models/**/*.onnx
+models/**/*.engine
+!models/**/.gitkeep
+
+# Local hardware/editor noise
+.idea/
+.vscode/
+Thumbs.db
+*.log
