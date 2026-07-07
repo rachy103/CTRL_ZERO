@@ -57,6 +57,8 @@ class DriveLogger:
                 "traffic_light_state",
                 "object_count",
                 "safety_reason",
+                "vision_obstacle_class",
+                "vision_obstacle_confidence",
                 "nearest_front_mm",
                 "lidar_speed_scale",
                 "lidar_front_points",
@@ -92,6 +94,7 @@ class DriveLogger:
                 mask_file = f"mask_{self.index:06d}.png"
                 cv2.imwrite(str(self.mask_dir / mask_file), lane.mask)
 
+        vision_obstacle = obstacle.vision_obstacle if isinstance(obstacle, SafetyDecision) else None
         self.writer.writerow(
             {
                 "timestamp": f"{time.time():.6f}",
@@ -111,6 +114,8 @@ class DriveLogger:
                 "traffic_light_state": lane.traffic_light_state,
                 "object_count": len(lane.objects),
                 "safety_reason": "" if obstacle is None else getattr(obstacle, "reason", ""),
+                "vision_obstacle_class": "" if vision_obstacle is None else vision_obstacle.class_name,
+                "vision_obstacle_confidence": "" if vision_obstacle is None else f"{vision_obstacle.confidence:.3f}",
                 "nearest_front_mm": "" if obstacle is None or obstacle.nearest_front_mm is None else f"{obstacle.nearest_front_mm:.1f}",
                 "lidar_speed_scale": "" if obstacle is None else f"{obstacle.speed_scale:.3f}",
                 "lidar_front_points": "" if obstacle is None else obstacle.front_points,

@@ -105,8 +105,10 @@ def build_safety_decision(
     lidar: ObstacleDecision | None = None,
     traffic_light_state: str = TRAFFIC_LIGHT_UNKNOWN,
     traffic_light_object: DetectedObject | None = None,
+    vision_obstacle_decision: SafetyDecision | None = None,
 ) -> SafetyDecision:
     return fuse_safety_decisions(
         safety_from_traffic_light(traffic_light_state, traffic_light_object),
+        vision_obstacle_decision,
         safety_from_lidar(lidar),
     )

@@ -12,6 +12,7 @@ from ctrl_zero.common import clamp
 from ctrl_zero.control import DriveConfig, DriveController
 from ctrl_zero.lidar import LidarConfig, LidarReader, ObstacleDecision, analyze_obstacles
 from ctrl_zero.logger import DriveLogger, LogConfig
+from ctrl_zero.obstacles import VisionObstacleConfig, analyze_vision_obstacles
 from ctrl_zero.safety import build_safety_decision
 from ctrl_zero.traffic_light import traffic_light_object
 from ctrl_zero.ui import draw_status
@@ -52,13 +53,18 @@ LIDAR_STOP_DISTANCE_MM = 450.0
 LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 0.35
 
+# Vision obstacles
+VISION_OBSTACLE_ENABLED = True
+VISION_OBSTACLE_MIN_CONFIDENCE = 0.30
+VISION_OBSTACLE_SLOW_SPEED_SCALE = 0.45
+
 # YOLO lane model. Use a lane-trained Ultralytics .pt file, not a generic COCO model.
 YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final.pt"
 YOLO_DEVICE = "cpu"
 YOLO_IMAGE_SIZE = 640
 YOLO_CONFIDENCE = 0.25
 YOLO_IOU = 0.45
-YOLO_CLASS_NAMES = ("car", "lane1", "lane2", "traffic_light")
+YOLO_CLASS_NAMES = ("car", "obstacle", "lane1", "lane2", "traffic_light")
 YOLO_FRAME_SKIP = 1
 YOLO_MIN_POINTS_PER_LANE = 3
 YOLO_MIN_VALID_Y_SPAN_RATIO = 0.08
@@ -243,6 +249,11 @@ def main() -> None:
     )
     lidar = LidarReader(lidar_config) if USE_LIDAR else None
     last_obstacle = ObstacleDecision.clear() if USE_LIDAR else None
+    vision_obstacle_config = VisionObstacleConfig(
+        enabled=VISION_OBSTACLE_ENABLED,
+        min_confidence=VISION_OBSTACLE_MIN_CONFIDENCE,
+        slow_speed_scale=VISION_OBSTACLE_SLOW_SPEED_SCALE,
+    )
     logger = DriveLogger(LogConfig(enabled=LOG_ENABLED or args.log, directory=LOG_DIR, save_every_n_frames=SAVE_EVERY_N_FRAMES))
 
     manual_steer = 0
@@ -282,10 +293,12 @@ def main() -> None:
             if args.mode == "manual" and time.time() > manual_steer_until:
                 manual_steer = 0
 
+            vision_obstacle = analyze_vision_obstacles(lane, vision_obstacle_config)
             safety = build_safety_decision(
                 lidar=last_obstacle,
                 traffic_light_state=lane.traffic_light_state,
                 traffic_light_object=traffic_light_object(lane.objects),
+                vision_obstacle_decision=vision_obstacle,
             )
             command = controller.compute(lane, safety, args.mode, manual_steer=manual_steer, manual_speed=manual_speed)
             motor.send(command.steer, command.speed if motor_enabled else 0)

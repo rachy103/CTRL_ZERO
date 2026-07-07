@@ -24,12 +24,16 @@ def draw_status(
         nearest = "NA" if obstacle.nearest_front_mm is None else f"{obstacle.nearest_front_mm:.0f}mm"
         lidar_text = f"{nearest} scale={obstacle.speed_scale:.2f}"
 
+    vision_text = "none"
+    if isinstance(obstacle, SafetyDecision) and obstacle.vision_obstacle is not None:
+        vision_text = f"{obstacle.vision_obstacle.class_name} {obstacle.vision_obstacle.confidence:.2f}"
+
     lines = [
         f"mode={mode} backend={backend} fps={fps:.1f} motor={'on' if motor_enabled else 'dry'}",
         f"steer={command.steer:+d} speed={command.speed:+d} reason={command.reason}",
         f"conf={lane.confidence:.2f} offset={format_optional(lane.offset_norm, 3)} heading={format_optional(lane.heading_deg, 1)} kappa={lane.curvature:+.6f}",
         f"lanes={len(lane.lanes)} width_px={format_optional(lane.lane_width_px, 1)} pair={lane.lane_pair_label} lidar={lidar_text}",
-        f"traffic={lane.traffic_light_state} objects={len(lane.objects)} safety={getattr(obstacle, 'reason', 'clear') if obstacle is not None else 'off'}",
+        f"traffic={lane.traffic_light_state} objects={len(lane.objects)} obstacle={vision_text} safety={getattr(obstacle, 'reason', 'clear') if obstacle is not None else 'off'}",
     ]
     y = 24
     for text in lines:

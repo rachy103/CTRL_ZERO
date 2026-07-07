@@ -22,7 +22,7 @@ class YOLOLaneConfig:
     image_size: int = 640
     confidence: float = 0.25
     iou: float = 0.45
-    class_names: tuple[str, ...] = ("car", "lane1", "lane2", "traffic_light")
+    class_names: tuple[str, ...] = ("car", "obstacle", "lane1", "lane2", "traffic_light")
     control_near_y_ratio: float = 0.95
     control_far_y_ratio: float = 0.68
     curve_lookahead_ratio: float = 0.45
@@ -781,7 +781,22 @@ class YOLOLaneDetector:
 
     def _is_non_lane_object_name(self, class_name: str) -> bool:
         compact = self._compact_class_name(class_name)
-        object_names = {"car", "trafficlight", "signallight", "signal", "stoplight"}
+        object_names = {
+            "car",
+            "obstacle",
+            "person",
+            "pedestrian",
+            "truck",
+            "bus",
+            "motorcycle",
+            "bicycle",
+            "cone",
+            "barrier",
+            "trafficlight",
+            "signallight",
+            "signal",
+            "stoplight",
+        }
         return compact in object_names or compact.startswith(("trafficlight", "signallight", "stoplight"))
 
     def _fit_lane_groups(self, lane_fragments: Sequence[Sequence[Point]], image_height: int, image_width: int, near_y: int, frame_center_x: float):
