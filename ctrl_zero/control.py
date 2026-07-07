@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from ctrl_zero.common import clamp
 from ctrl_zero.lidar import ObstacleDecision
+from ctrl_zero.safety import SafetyDecision
 from ctrl_zero.vision.base import LaneDetection
 
 
@@ -52,7 +53,7 @@ class DriveController:
     def compute(
         self,
         lane: LaneDetection,
-        obstacle: ObstacleDecision | None,
+        obstacle: ObstacleDecision | SafetyDecision | None,
         mode: str,
         manual_steer: int = 0,
         manual_speed: int = 0,
@@ -71,7 +72,7 @@ class DriveController:
             return self._compute_stanley(lane, obstacle)
         return self._compute_contest(lane, obstacle)
 
-    def _compute_contest(self, lane: LaneDetection, obstacle: ObstacleDecision | None) -> DriveCommand:
+    def _compute_contest(self, lane: LaneDetection, obstacle: ObstacleDecision | SafetyDecision | None) -> DriveCommand:
         steering_angle = lane.heading_deg or 0.0
         vehicle_position_x = -(lane.offset_px or 0.0)
 
@@ -92,7 +93,7 @@ class DriveController:
         speed, reason = self._apply_obstacle(speed_target, obstacle, "contest")
         return DriveCommand(steer=steer, speed=speed, reason=reason)
 
-    def _compute_stanley(self, lane: LaneDetection, obstacle: ObstacleDecision | None) -> DriveCommand:
+    def _compute_stanley(self, lane: LaneDetection, obstacle: ObstacleDecision | SafetyDecision | None) -> DriveCommand:
         e_y = lane.offset_norm
         e_psi = math.radians(lane.heading_deg or 0.0)
         kappa = lane.curvature or 0.0
@@ -126,7 +127,7 @@ class DriveController:
         delta = clamp(target - self.prev_speed, -8.0, 4.0)
         return self.prev_speed + delta
 
-    def _handle_lost(self, obstacle: ObstacleDecision | None) -> DriveCommand:
+    def _handle_lost(self, obstacle: ObstacleDecision | SafetyDecision | None) -> DriveCommand:
         self.lost_frames += 1
         if self.lost_frames <= self.config.max_hold_frames:
             speed = max(0.0, self.prev_speed - self.config.hold_decel_step)
@@ -138,7 +139,12 @@ class DriveController:
         self.prev_steer = 0.0
         return DriveCommand(steer=0, speed=0, reason="lane_lost")
 
-    def _manual_command(self, manual_steer: int, manual_speed: int, obstacle: ObstacleDecision | None) -> DriveCommand:
+    def _manual_command(
+        self,
+        manual_steer: int,
+        manual_speed: int,
+        obstacle: ObstacleDecision | SafetyDecision | None,
+    ) -> DriveCommand:
         steer = int(clamp(manual_steer, -self.config.max_steer, self.config.max_steer))
         speed = int(clamp(manual_speed, -self.config.max_speed, self.config.max_speed))
         self.prev_steer = steer
@@ -147,10 +153,12 @@ class DriveController:
         return DriveCommand(steer=steer, speed=speed, reason=reason)
 
     @staticmethod
-    def _apply_obstacle(speed: int, obstacle: ObstacleDecision | None, reason: str) -> tuple[int, str]:
+    def _apply_obstacle(speed: int, obstacle: ObstacleDecision | SafetyDecision | None, reason: str) -> tuple[int, str]:
         if obstacle is None:
             return speed, reason
         if obstacle.should_stop:
-            return 0, "lidar_stop"
+            return 0, obstacle.reason if isinstance(obstacle, SafetyDecision) else "lidar_stop"
         scaled = int(round(speed * obstacle.speed_scale))
-        return scaled, reason if obstacle.speed_scale >= 1.0 else "lidar_slow"
+        if obstacle.speed_scale >= 1.0:
+            return scaled, reason
+        return scaled, obstacle.reason if isinstance(obstacle, SafetyDecision) else "lidar_slow"

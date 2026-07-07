@@ -5,13 +5,14 @@ import cv2
 from ctrl_zero.common import format_optional
 from ctrl_zero.control import DriveCommand
 from ctrl_zero.lidar import ObstacleDecision
+from ctrl_zero.safety import SafetyDecision
 from ctrl_zero.vision.base import LaneDetection
 
 
 def draw_status(
     frame,
     lane: LaneDetection,
-    obstacle: ObstacleDecision | None,
+    obstacle: ObstacleDecision | SafetyDecision | None,
     command: DriveCommand,
     mode: str,
     backend: str,
@@ -28,6 +29,7 @@ def draw_status(
         f"steer={command.steer:+d} speed={command.speed:+d} reason={command.reason}",
         f"conf={lane.confidence:.2f} offset={format_optional(lane.offset_norm, 3)} heading={format_optional(lane.heading_deg, 1)} kappa={lane.curvature:+.6f}",
         f"lanes={len(lane.lanes)} width_px={format_optional(lane.lane_width_px, 1)} pair={lane.lane_pair_label} lidar={lidar_text}",
+        f"traffic={lane.traffic_light_state} objects={len(lane.objects)} safety={getattr(obstacle, 'reason', 'clear') if obstacle is not None else 'off'}",
     ]
     y = 24
     for text in lines:

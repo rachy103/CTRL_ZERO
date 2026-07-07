@@ -36,7 +36,7 @@ const float STEER_SLEW_PER_MS = 0.9f;
 
 const int DRIVE_MAX_PWM = 255;
 const int DRIVE_DEADBAND_PWM = 8;
-const unsigned long COMMAND_TIMEOUT_MS = 150;
+const unsigned long COMMAND_TIMEOUT_MS = 500;
 
 char inputBuf[40];
 uint8_t inputLen = 0;

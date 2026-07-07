@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
+
+from ctrl_zero.perception import DetectedObject
 
 Point = tuple[int, int]
 
@@ -23,8 +25,10 @@ class LaneDetection:
     confidence: float
     mask: np.ndarray | None
     annotated: np.ndarray
+    objects: Sequence[DetectedObject] = field(default_factory=tuple)
     curvature: float = 0.0
     lane_pair_label: str = ""
+    traffic_light_state: str = "unknown"
 
     @property
     def has_center(self) -> bool:

@@ -9,6 +9,7 @@ import cv2
 
 from ctrl_zero.control import DriveCommand
 from ctrl_zero.lidar import ObstacleDecision
+from ctrl_zero.safety import SafetyDecision
 from ctrl_zero.vision.base import LaneDetection
 
 
@@ -53,6 +54,9 @@ class DriveLogger:
                 "curvature_1_per_px",
                 "lane_width_px",
                 "lane_pair",
+                "traffic_light_state",
+                "object_count",
+                "safety_reason",
                 "nearest_front_mm",
                 "lidar_speed_scale",
                 "lidar_front_points",
@@ -70,7 +74,7 @@ class DriveLogger:
         mode: str,
         backend: str,
         lane: LaneDetection,
-        obstacle: ObstacleDecision | None,
+        obstacle: ObstacleDecision | SafetyDecision | None,
         command: DriveCommand,
     ) -> None:
         if not self.config.enabled or self.writer is None:
@@ -104,6 +108,9 @@ class DriveLogger:
                 "curvature_1_per_px": f"{lane.curvature:.8f}",
                 "lane_width_px": "" if lane.lane_width_px is None else f"{lane.lane_width_px:.3f}",
                 "lane_pair": lane.lane_pair_label,
+                "traffic_light_state": lane.traffic_light_state,
+                "object_count": len(lane.objects),
+                "safety_reason": "" if obstacle is None else getattr(obstacle, "reason", ""),
                 "nearest_front_mm": "" if obstacle is None or obstacle.nearest_front_mm is None else f"{obstacle.nearest_front_mm:.1f}",
                 "lidar_speed_scale": "" if obstacle is None else f"{obstacle.speed_scale:.3f}",
                 "lidar_front_points": "" if obstacle is None else obstacle.front_points,

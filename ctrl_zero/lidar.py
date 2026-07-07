@@ -15,8 +15,8 @@ class LidarConfig:
     max_buffer_size: int = 3000
     sample_rate: int = 10
     min_distance_mm: float = 0.0
-    front_min_angle_deg: float = 330.0
-    front_max_angle_deg: float = 30.0
+    front_min_angle_deg: float = 210.0
+    front_max_angle_deg: float = 150.0
     stop_distance_mm: float = 450.0
     slow_distance_mm: float = 900.0
     min_speed_scale: float = 0.35

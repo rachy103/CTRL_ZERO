@@ -9,6 +9,8 @@ import cv2
 import numpy as np
 
 from ctrl_zero.common import clamp
+from ctrl_zero.perception import BoundingBox, DetectedObject
+from ctrl_zero.traffic_light import traffic_light_state_from_objects
 from ctrl_zero.vision.base import LaneDetection, Point
 from ctrl_zero.vision.preprocess import LanePreprocessor
 
@@ -144,17 +146,31 @@ class YOLOLaneDetector:
             predict_kwargs["classes"] = allowed_class_ids
         results = self.model.predict(**predict_kwargs)
         result = results[0]
+        model_objects = self._extract_objects(result, model_h, model_w)
         segmentation_mode = self.config.segmentation_mode.lower().strip()
         if segmentation_mode == "lane_area":
-            return self._detect_lane_area(model_frame, result)
+            return self._detect_lane_area(
+                model_frame,
+                result,
+                model_objects,
+                traffic_light_state_from_objects(model_frame, model_objects),
+            )
 
         model_mask = self._combined_mask(result, model_h, model_w)
         if segmentation_mode == "drivable_area":
-            return self._detect_drivable_area(model_frame, model_mask, result)
+            return self._detect_drivable_area(
+                model_frame,
+                model_mask,
+                result,
+                model_objects,
+                traffic_light_state_from_objects(model_frame, model_objects),
+            )
 
         lane_fragments = self._extract_lanes(result, model_h, model_w)
         if transform is not None:
             lane_fragments = [transform.points_to_original(lane) for lane in lane_fragments]
+        objects = self._objects_to_original(model_objects, transform) if transform is not None else model_objects
+        traffic_light_state = traffic_light_state_from_objects(frame, objects)
 
         fits = self._fit_lane_groups(lane_fragments, h, w, near_y, frame_center_x)
         if not fits:
@@ -237,6 +253,7 @@ class YOLOLaneDetector:
             selection_y=selection_y,
             target_fit=target_fit,
         )
+        self._draw_detected_objects(annotated_original, objects)
         annotated = (
             transform.image_to_processed(annotated_original, mask_source_polygon=True)
             if display_in_bev and transform is not None
@@ -256,11 +273,20 @@ class YOLOLaneDetector:
             confidence=confidence,
             mask=mask,
             annotated=annotated,
+            objects=objects,
             curvature=curvature,
             lane_pair_label=lane_label,
+            traffic_light_state=traffic_light_state,
         )
 
-    def _detect_drivable_area(self, frame: np.ndarray, mask: np.ndarray | None, result) -> LaneDetection:
+    def _detect_drivable_area(
+        self,
+        frame: np.ndarray,
+        mask: np.ndarray | None,
+        result,
+        objects: Sequence[DetectedObject],
+        traffic_light_state: str,
+    ) -> LaneDetection:
         h, w = frame.shape[:2]
         near_y = int(h * self.config.control_near_y_ratio)
         far_y = int(h * self.config.control_far_y_ratio)
@@ -312,6 +338,7 @@ class YOLOLaneDetector:
             confidence,
             label,
         )
+        self._draw_detected_objects(annotated, objects)
         return LaneDetection(
             lanes=lanes,
             left_fit=center_fit,
@@ -326,11 +353,19 @@ class YOLOLaneDetector:
             confidence=confidence,
             mask=mask,
             annotated=annotated,
+            objects=objects,
             curvature=curvature,
             lane_pair_label=label,
+            traffic_light_state=traffic_light_state,
         )
 
-    def _detect_lane_area(self, frame: np.ndarray, result) -> LaneDetection:
+    def _detect_lane_area(
+        self,
+        frame: np.ndarray,
+        result,
+        objects: Sequence[DetectedObject],
+        traffic_light_state: str,
+    ) -> LaneDetection:
         h, w = frame.shape[:2]
         near_y = int(h * self.config.control_near_y_ratio)
         far_y = int(h * self.config.control_far_y_ratio)
@@ -390,6 +425,7 @@ class YOLOLaneDetector:
             confidence,
             label,
         )
+        self._draw_detected_objects(annotated, objects)
         return LaneDetection(
             lanes=lanes,
             left_fit=center_fit,
@@ -404,8 +440,10 @@ class YOLOLaneDetector:
             confidence=confidence,
             mask=combined_mask,
             annotated=annotated,
+            objects=objects,
             curvature=curvature,
             lane_pair_label=label,
+            traffic_light_state=traffic_light_state,
         )
 
     def _lane_area_candidates_from_masks(
@@ -483,6 +521,93 @@ class YOLOLaneDetector:
         for mask in masks_by_name.values():
             combined[mask > 0] = 255
         return combined if cv2.countNonZero(combined) > 0 else None
+
+    def _extract_objects(self, result, height: int, width: int) -> tuple[DetectedObject, ...]:
+        if result.boxes is None or result.boxes.cls is None or getattr(result.boxes, "xyxy", None) is None:
+            return ()
+
+        xyxy = self._tensor_to_numpy(result.boxes.xyxy)
+        class_ids = self._tensor_to_numpy(result.boxes.cls).astype(int)
+        confidences = (
+            self._tensor_to_numpy(result.boxes.conf).astype(float)
+            if getattr(result.boxes, "conf", None) is not None
+            else np.ones(len(class_ids), dtype=np.float64)
+        )
+        masks = self._tensor_to_numpy(result.masks.data) if getattr(result, "masks", None) is not None else None
+
+        objects: list[DetectedObject] = []
+        for index, box in enumerate(xyxy):
+            if index >= len(class_ids):
+                continue
+            class_name = self._class_name(int(class_ids[index]), result.names)
+            if not self._class_allowed_name(class_name) or not self._is_non_lane_object_name(class_name):
+                continue
+            x1, y1, x2, y2 = [float(value) for value in box]
+            bbox = BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2).clipped(width, height)
+            if bbox.area <= 0.0:
+                continue
+            mask_area = None
+            if masks is not None and index < len(masks):
+                mask = masks[index]
+                if mask.shape[:2] != (height, width):
+                    mask = cv2.resize(mask.astype(np.float32), (width, height), interpolation=cv2.INTER_NEAREST)
+                mask_area = float(np.count_nonzero(mask > 0.5))
+            objects.append(
+                DetectedObject(
+                    class_name=class_name,
+                    confidence=float(confidences[index]) if index < len(confidences) else 1.0,
+                    bbox=bbox,
+                    class_id=int(class_ids[index]),
+                    mask_area_px=mask_area,
+                )
+            )
+        return tuple(objects)
+
+    @staticmethod
+    def _objects_to_original(objects: Sequence[DetectedObject], transform) -> tuple[DetectedObject, ...]:
+        mapped: list[DetectedObject] = []
+        for obj in objects:
+            box = obj.bbox
+            points = transform.points_to_original(
+                [
+                    (int(round(box.x1)), int(round(box.y1))),
+                    (int(round(box.x2)), int(round(box.y1))),
+                    (int(round(box.x2)), int(round(box.y2))),
+                    (int(round(box.x1)), int(round(box.y2))),
+                ]
+            )
+            if not points:
+                continue
+            xs = [point[0] for point in points]
+            ys = [point[1] for point in points]
+            mapped.append(
+                DetectedObject(
+                    class_name=obj.class_name,
+                    confidence=obj.confidence,
+                    bbox=BoundingBox(float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))),
+                    class_id=obj.class_id,
+                    mask_area_px=obj.mask_area_px,
+                )
+            )
+        return tuple(mapped)
+
+    @staticmethod
+    def _draw_detected_objects(image: np.ndarray, objects: Sequence[DetectedObject]) -> None:
+        for obj in objects:
+            box = obj.bbox.clipped(image.shape[1], image.shape[0])
+            x1, y1 = int(round(box.x1)), int(round(box.y1))
+            x2, y2 = int(round(box.x2)), int(round(box.y2))
+            color = (0, 255, 255) if "traffic" in obj.compact_class_name else (0, 165, 255)
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+            label = f"{obj.class_name} {obj.confidence:.2f}"
+            cv2.putText(image, label, (x1, max(14, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3)
+            cv2.putText(image, label, (x1, max(14, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+
+    @staticmethod
+    def _tensor_to_numpy(value) -> np.ndarray:
+        if hasattr(value, "detach"):
+            return value.detach().cpu().numpy()
+        return np.asarray(value)
 
     @staticmethod
     def _load_model(model_path: Path):

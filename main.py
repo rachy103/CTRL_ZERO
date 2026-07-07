@@ -12,9 +12,10 @@ from ctrl_zero.common import clamp
 from ctrl_zero.control import DriveConfig, DriveController
 from ctrl_zero.lidar import LidarConfig, LidarReader, ObstacleDecision, analyze_obstacles
 from ctrl_zero.logger import DriveLogger, LogConfig
+from ctrl_zero.safety import build_safety_decision
+from ctrl_zero.traffic_light import traffic_light_object
 from ctrl_zero.ui import draw_status
-from ctrl_zero.vision.classical_lane import ClassicalLaneConfig, ClassicalLaneDetector
-from ctrl_zero.vision.preprocess import BirdEyeConfig, LanePreprocessor, ROICropConfig
+from ctrl_zero.vision.preprocess import LanePreprocessor
 
 
 # =============================================================================
@@ -26,7 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 # Runtime mode: "vision"은 모터 미출력, "manual"은 키보드 수동, "auto"는 차선+라이다 자동 주행입니다.
 RUN_MODE = "auto"
-LANE_BACKEND = "yolo"  # "yolo" 또는 "opencv"
+LANE_BACKEND = "yolo"
 
 # Camera
 CAMERA_INDEX = 0
@@ -45,8 +46,8 @@ DRIVE_MAX_PWM = 255
 USE_LIDAR = False
 LIDAR_PORT = None  # 예: "COM5"
 LIDAR_POLL_EVERY_N_FRAMES = 2
-LIDAR_FRONT_MIN_ANGLE_DEG = 330.0
-LIDAR_FRONT_MAX_ANGLE_DEG = 30.0
+LIDAR_FRONT_MIN_ANGLE_DEG = 210.0
+LIDAR_FRONT_MAX_ANGLE_DEG = 150.0
 LIDAR_STOP_DISTANCE_MM = 450.0
 LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 0.35
@@ -76,56 +77,24 @@ YOLO_TARGET_PATH_MODE = "closest_line"  # "closest_line" follows one line. "lane
 YOLO_LANE_PAIR_SELECT_Y_RATIO = 0.78
 YOLO_LANE_PAIR_TARGET_OFFSET_RATIO = 0.0
 
-# YOLO input preprocessing. ROI crop is safe to enable first. Bird-eye view needs camera-specific tuning.
-ROI_ENABLED = True
-ROI_TOP_RATIO = 0.00
-ROI_BOTTOM_RATIO = 1.00
-ROI_LEFT_RATIO = 0.00
-ROI_RIGHT_RATIO = 1.00
-
-BIRD_EYE_ENABLED = False
-BIRD_EYE_SRC_BOTTOM_LEFT = (0.20, 0.98)
-BIRD_EYE_SRC_BOTTOM_RIGHT = (0.95, 0.98)
-BIRD_EYE_SRC_TOP_RIGHT = (0.70, 0.35)
-BIRD_EYE_SRC_TOP_LEFT = (0.50, 0.35)
-BIRD_EYE_DST_MARGIN_RATIO = 0.18
-BIRD_EYE_MASK_SOURCE_POLYGON = True
-YOLO_DISPLAY_BIRD_EYE_VIEW = True
-
-# OpenCV fallback lane detector
-OPENCV_RESIZE_WIDTH = 640
-OPENCV_ROI_TOP_RATIO = 0.58
-OPENCV_CANNY_LOW = 50
-OPENCV_CANNY_HIGH = 150
-OPENCV_HOUGH_THRESHOLD = 35
-
 # Shared lane geometry
 DEFAULT_LANE_WIDTH_RATIO = 0.50
 MIN_LANE_WIDTH_RATIO = 0.35
 MAX_LANE_WIDTH_RATIO = 0.65
 
 # Driving controller. Positive steer means right.
-CONTROL_MODE = "contest"  # "contest" uses angle/position weights. "stanley" keeps the old Stanley controller.
-MIN_SPEED = 200
-MAX_SPEED = 200
+CONTROL_MODE = "contest"  # "contest" uses angle/position weights.
+MIN_SPEED = 230
+MAX_SPEED = 255
 MIN_LANE_CONFIDENCE_TO_DRIVE = 0.45
-CONTEST_ANGLE_WEIGHT = 0.7
+CONTEST_ANGLE_WEIGHT = 0.8
 CONTEST_POSITION_WEIGHT = 0.07
 CONTEST_STEERING_ANGLE_NORM_DEG = 50.0
 CONTEST_STEER_LIMIT = 10.0
 
-# Stanley fallback parameters.
-CURVE_SPEED_GAIN = 3.0
-KAPPA_REF = 0.0015
-WHEELBASE_PX = 220.0
-K_STANLEY = 1.6
-HEADING_GAIN = 1.0
-CURVATURE_FF_GAIN = 1.0
-STEER_SCALE = 100.0
-MAX_STEER = 100
+# Common steering limits & safety
+MAX_STEER = 80
 REVERSE_STEER = False
-STEER_SLEW_BASE = 18.0
-STEER_SLEW_MIN = 8.0
 MAX_HOLD_FRAMES = 6
 HOLD_DECEL_STEP = 6
 
@@ -146,7 +115,7 @@ PRINT_EVERY_N_FRAMES = 15
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="CTRL_ZERO camera/LiDAR/Arduino autonomous driving runtime.")
     parser.add_argument("--mode", choices=("vision", "manual", "auto"), default=RUN_MODE)
-    parser.add_argument("--backend", choices=("yolo", "opencv"), default=LANE_BACKEND)
+    parser.add_argument("--backend", choices=("yolo",), default=LANE_BACKEND)
     parser.add_argument("--yolo-model", type=Path, default=YOLO_MODEL_PATH)
     parser.add_argument("--yolo-frame-skip", type=int, default=YOLO_FRAME_SKIP)
     parser.add_argument("--yolo-imgsz", type=int, default=YOLO_IMAGE_SIZE)
@@ -169,15 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yolo-target-path", choices=("closest_line", "left_line", "right_line", "lane_center"), default=YOLO_TARGET_PATH_MODE)
     parser.add_argument("--yolo-pair-select-y", type=float, default=YOLO_LANE_PAIR_SELECT_Y_RATIO)
     parser.add_argument("--yolo-pair-target-offset", type=float, default=YOLO_LANE_PAIR_TARGET_OFFSET_RATIO)
-    parser.add_argument("--roi", action=argparse.BooleanOptionalAction, default=ROI_ENABLED)
-    parser.add_argument("--roi-top", type=float, default=ROI_TOP_RATIO)
-    parser.add_argument("--roi-bottom", type=float, default=ROI_BOTTOM_RATIO)
-    parser.add_argument("--roi-left", type=float, default=ROI_LEFT_RATIO)
-    parser.add_argument("--roi-right", type=float, default=ROI_RIGHT_RATIO)
-    parser.add_argument("--bird-eye", action=argparse.BooleanOptionalAction, default=BIRD_EYE_ENABLED)
-    parser.add_argument("--bev-dst-margin", type=float, default=BIRD_EYE_DST_MARGIN_RATIO)
-    parser.add_argument("--bev-mask-source", action=argparse.BooleanOptionalAction, default=BIRD_EYE_MASK_SOURCE_POLYGON)
-    parser.add_argument("--yolo-display-bev", action=argparse.BooleanOptionalAction, default=YOLO_DISPLAY_BIRD_EYE_VIEW)
     parser.add_argument("--camera-index", type=int, default=CAMERA_INDEX)
     parser.add_argument("--camera-backend", choices=("dshow", "msmf", "any"), default=CAMERA_BACKEND)
     parser.add_argument("--camera-width", type=int, default=CAMERA_WIDTH)
@@ -191,43 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_lane_preprocessor(args) -> LanePreprocessor:
-    return LanePreprocessor(
-        roi=ROICropConfig(
-            enabled=args.roi,
-            top_ratio=args.roi_top,
-            bottom_ratio=args.roi_bottom,
-            left_ratio=args.roi_left,
-            right_ratio=args.roi_right,
-        ),
-        bird_eye=BirdEyeConfig(
-            enabled=args.bird_eye,
-            src_bottom_left=BIRD_EYE_SRC_BOTTOM_LEFT,
-            src_bottom_right=BIRD_EYE_SRC_BOTTOM_RIGHT,
-            src_top_right=BIRD_EYE_SRC_TOP_RIGHT,
-            src_top_left=BIRD_EYE_SRC_TOP_LEFT,
-            dst_margin_ratio=args.bev_dst_margin,
-            mask_source_polygon=args.bev_mask_source,
-        ),
-    )
-
-
 def build_lane_detector(args):
-    backend = args.backend
-    if backend == "opencv":
-        return ClassicalLaneDetector(
-            ClassicalLaneConfig(
-                resize_width=OPENCV_RESIZE_WIDTH,
-                roi_top_ratio=OPENCV_ROI_TOP_RATIO,
-                canny_low=OPENCV_CANNY_LOW,
-                canny_high=OPENCV_CANNY_HIGH,
-                hough_threshold=OPENCV_HOUGH_THRESHOLD,
-                default_lane_width_ratio=DEFAULT_LANE_WIDTH_RATIO,
-                min_lane_width_ratio=MIN_LANE_WIDTH_RATIO,
-                max_lane_width_ratio=MAX_LANE_WIDTH_RATIO,
-            )
-        )
-
     from ctrl_zero.vision.yolo_lane import YOLOLaneConfig, YOLOLaneDetector
     from ctrl_zero.vision.cache import FrameSkippingLaneDetector
 
@@ -259,8 +183,8 @@ def build_lane_detector(args):
             default_lane_width_ratio=DEFAULT_LANE_WIDTH_RATIO,
             min_lane_width_ratio=MIN_LANE_WIDTH_RATIO,
             max_lane_width_ratio=MAX_LANE_WIDTH_RATIO,
-            display_bird_eye_view=args.yolo_display_bev,
-            preprocessor=build_lane_preprocessor(args),
+            display_bird_eye_view=False,
+            preprocessor=LanePreprocessor(),
         )
     )
     return FrameSkippingLaneDetector(detector, skip=args.yolo_frame_skip) if args.yolo_frame_skip > 1 else detector
@@ -300,18 +224,9 @@ def main() -> None:
             contest_position_weight=CONTEST_POSITION_WEIGHT,
             contest_angle_norm_deg=CONTEST_STEERING_ANGLE_NORM_DEG,
             contest_steer_limit=CONTEST_STEER_LIMIT,
-            curve_speed_gain=CURVE_SPEED_GAIN,
-            kappa_ref=KAPPA_REF,
-            wheelbase_px=WHEELBASE_PX,
-            k_stanley=K_STANLEY,
-            heading_gain=HEADING_GAIN,
-            ff_gain=CURVATURE_FF_GAIN,
-            steer_scale=STEER_SCALE,
             min_confidence=MIN_LANE_CONFIDENCE_TO_DRIVE,
             max_steer=MAX_STEER,
             reverse_steer=REVERSE_STEER,
-            steer_slew_base=STEER_SLEW_BASE,
-            steer_slew_min=STEER_SLEW_MIN,
             max_hold_frames=MAX_HOLD_FRAMES,
             hold_decel_step=HOLD_DECEL_STEP,
         )
@@ -367,7 +282,12 @@ def main() -> None:
             if args.mode == "manual" and time.time() > manual_steer_until:
                 manual_steer = 0
 
-            command = controller.compute(lane, last_obstacle, args.mode, manual_steer=manual_steer, manual_speed=manual_speed)
+            safety = build_safety_decision(
+                lidar=last_obstacle,
+                traffic_light_state=lane.traffic_light_state,
+                traffic_light_object=traffic_light_object(lane.objects),
+            )
+            command = controller.compute(lane, safety, args.mode, manual_steer=manual_steer, manual_speed=manual_speed)
             motor.send(command.steer, command.speed if motor_enabled else 0)
 
             now = time.perf_counter()
@@ -382,12 +302,12 @@ def main() -> None:
                     flush=True,
                 )
 
-            logger.log(frame, args.mode, args.backend, lane, last_obstacle, command)
+            logger.log(frame, args.mode, args.backend, lane, safety, command)
 
             key = -1
             if display_enabled:
                 display = lane.annotated
-                draw_status(display, lane, last_obstacle, command, args.mode, args.backend, fps, motor_enabled)
+                draw_status(display, lane, safety, command, args.mode, args.backend, fps, motor_enabled)
                 cv2.imshow("CTRL_ZERO", display)
                 if SHOW_MASK_WINDOW and lane.mask is not None:
                     cv2.imshow("CTRL_ZERO lane mask", lane.mask)

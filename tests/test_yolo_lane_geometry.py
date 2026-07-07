@@ -133,6 +133,43 @@ def test_lane_geometry_filter_excludes_car_and_traffic_light():
     assert not detector._class_allowed_for_lane_geometry(2, names)
 
 
+class FakeTensor:
+    def __init__(self, value):
+        self.value = np.array(value)
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self.value
+
+
+class FakeBoxes:
+    xyxy = FakeTensor([[5, 10, 30, 40], [50, 20, 70, 130], [90, 5, 115, 45]])
+    cls = FakeTensor([0, 1, 2])
+    conf = FakeTensor([0.90, 0.80, 0.70])
+
+
+class FakeResult:
+    boxes = FakeBoxes()
+    masks = None
+    names = {0: "car", 1: "lane1", 2: "traffic light"}
+
+
+def test_non_lane_objects_are_extracted_for_perception():
+    detector = make_detector()
+    detector.class_names = ("car", "lane1", "lane2", "traffic_light")
+
+    objects = detector._extract_objects(FakeResult(), height=160, width=160)
+
+    assert [obj.class_name for obj in objects] == ["car", "traffic light"]
+    assert objects[0].confidence == 0.90
+    assert objects[1].bbox.x1 == 90
+
+
 def test_right_target_selects_right_adjacent_lane_pair():
     detector = make_detector()
     detector.config.target_lane_pair = "right"
