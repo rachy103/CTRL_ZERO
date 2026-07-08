@@ -83,6 +83,7 @@ class DriveController:
         contest_steer = clamp(mapped + adjust, -steer_limit, steer_limit)
 
         steer_raw = (contest_steer / steer_limit) * self.config.max_steer
+        steer_raw = self._apply_avoidance_steer(steer_raw, obstacle)
         if self.config.reverse_steer:
             steer_raw = -steer_raw
         steer = int(round(clamp(steer_raw, -self.config.max_steer, self.config.max_steer)))
@@ -127,6 +128,15 @@ class DriveController:
         delta = clamp(target - self.prev_speed, -8.0, 4.0)
         return self.prev_speed + delta
 
+    def _apply_avoidance_steer(
+        self,
+        steer_raw: float,
+        obstacle: ObstacleDecision | SafetyDecision | None,
+    ) -> float:
+        if not isinstance(obstacle, SafetyDecision) or obstacle.avoidance_steer == 0.0:
+            return steer_raw
+        return clamp(steer_raw + obstacle.avoidance_steer, -self.config.max_steer, self.config.max_steer)
+
     def _handle_lost(self, obstacle: ObstacleDecision | SafetyDecision | None) -> DriveCommand:
         self.lost_frames += 1
         if self.lost_frames <= self.config.max_hold_frames:
@@ -159,6 +169,8 @@ class DriveController:
         if obstacle.should_stop:
             return 0, obstacle.reason if isinstance(obstacle, SafetyDecision) else "lidar_stop"
         scaled = int(round(speed * obstacle.speed_scale))
+        if isinstance(obstacle, SafetyDecision) and obstacle.reason != "clear":
+            return scaled, obstacle.reason
         if obstacle.speed_scale >= 1.0:
             return scaled, reason
         return scaled, obstacle.reason if isinstance(obstacle, SafetyDecision) else "lidar_slow"

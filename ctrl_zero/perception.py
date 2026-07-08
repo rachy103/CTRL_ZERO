@@ -52,6 +52,8 @@ class DetectedObject:
     bbox: BoundingBox
     class_id: int | None = None
     mask_area_px: float | None = None
+    lane_label: str = ""
+    lane_distance_px: float | None = None
 
     @property
     def compact_class_name(self) -> str:

@@ -11,6 +11,7 @@ env/
 
 # Runtime output
 lane_logs/
+Log/
 logs/
 captures/
 

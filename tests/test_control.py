@@ -4,6 +4,7 @@ import numpy as np
 
 from ctrl_zero.control import DriveConfig, DriveController
 from ctrl_zero.lidar import ObstacleDecision
+from ctrl_zero.safety import SafetyDecision
 from ctrl_zero.vision.base import LaneDetection
 
 
@@ -77,3 +78,21 @@ def test_lidar_stop_overrides_speed():
     command = controller.compute(lane(), obstacle, "auto")
     assert command.speed == 0
     assert command.reason == "lidar_stop"
+
+
+def test_avoidance_steer_is_added_without_speed_scaling():
+    controller = DriveController(DriveConfig(min_confidence=0.1, max_steer=80, max_speed=255))
+    safety = SafetyDecision(
+        speed_scale=1.0,
+        should_stop=False,
+        reason="vision_obstacle_lane_change_lane1_to_lane2",
+        avoidance_steer=40.0,
+        current_lane_label="lane1",
+        target_lane_label="lane2",
+    )
+
+    command = controller.compute(lane(), safety, "auto")
+
+    assert command.steer == 40
+    assert command.speed == 255
+    assert command.reason == "vision_obstacle_lane_change_lane1_to_lane2"

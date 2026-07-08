@@ -26,14 +26,21 @@ def draw_status(
 
     vision_text = "none"
     if isinstance(obstacle, SafetyDecision) and obstacle.vision_obstacle is not None:
-        vision_text = f"{obstacle.vision_obstacle.class_name} {obstacle.vision_obstacle.confidence:.2f}"
+        object_lane = f" {obstacle.vision_obstacle.lane_label}" if obstacle.vision_obstacle.lane_label else ""
+        vision_text = f"{obstacle.vision_obstacle.class_name}{object_lane} {obstacle.vision_obstacle.confidence:.2f}"
+    avoid_text = "0"
+    if isinstance(obstacle, SafetyDecision) and obstacle.avoidance_steer != 0.0:
+        avoid_text = f"{obstacle.avoidance_steer:+.0f}->{obstacle.target_lane_label}"
+    traffic_ratio = "NA"
+    if isinstance(obstacle, SafetyDecision) and obstacle.traffic_light_area_ratio is not None:
+        traffic_ratio = f"{obstacle.traffic_light_area_ratio:.3f}"
 
     lines = [
         f"mode={mode} backend={backend} fps={fps:.1f} motor={'on' if motor_enabled else 'dry'}",
         f"steer={command.steer:+d} speed={command.speed:+d} reason={command.reason}",
         f"conf={lane.confidence:.2f} offset={format_optional(lane.offset_norm, 3)} heading={format_optional(lane.heading_deg, 1)} kappa={lane.curvature:+.6f}",
-        f"lanes={len(lane.lanes)} width_px={format_optional(lane.lane_width_px, 1)} pair={lane.lane_pair_label} lidar={lidar_text}",
-        f"traffic={lane.traffic_light_state} objects={len(lane.objects)} obstacle={vision_text} safety={getattr(obstacle, 'reason', 'clear') if obstacle is not None else 'off'}",
+        f"lanes={len(lane.lanes)} current_lane={lane.lane_label or 'NA'} width_px={format_optional(lane.lane_width_px, 1)} lidar={lidar_text}",
+        f"traffic={lane.traffic_light_state} traffic_area={traffic_ratio} objects={len(lane.objects)} obstacle={vision_text} avoid={avoid_text} safety={getattr(obstacle, 'reason', 'clear') if obstacle is not None else 'off'}",
     ]
     y = 24
     for text in lines:

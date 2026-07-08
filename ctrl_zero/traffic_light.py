@@ -13,6 +13,7 @@ TRAFFIC_LIGHT_RED = "red"
 TRAFFIC_LIGHT_YELLOW = "yellow"
 TRAFFIC_LIGHT_GREEN = "green"
 TRAFFIC_LIGHT_STOP_STATES = (TRAFFIC_LIGHT_RED, TRAFFIC_LIGHT_YELLOW)
+DEFAULT_TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.010
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,25 @@ def traffic_light_object(objects: Iterable[DetectedObject]) -> DetectedObject | 
     if not candidates:
         return None
     return max(candidates, key=lambda obj: obj.confidence)
+
+
+def traffic_light_area_ratio(obj: DetectedObject | None, frame_area: float) -> float | None:
+    if obj is None:
+        return None
+    return obj.bbox.area / max(frame_area, 1.0)
+
+
+def traffic_light_meets_stop_size(
+    obj: DetectedObject | None,
+    frame_area: float | None,
+    min_area_ratio: float,
+) -> bool:
+    if min_area_ratio <= 0.0:
+        return True
+    if obj is None or frame_area is None:
+        return False
+    ratio = traffic_light_area_ratio(obj, frame_area)
+    return ratio is not None and ratio >= min_area_ratio
 
 
 def traffic_light_state_from_objects(

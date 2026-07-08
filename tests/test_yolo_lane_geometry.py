@@ -5,6 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from ctrl_zero.perception import BoundingBox, DetectedObject
 from ctrl_zero.vision.yolo_lane import YOLOLaneConfig, YOLOLaneDetector
 
 
@@ -168,6 +169,28 @@ def test_non_lane_objects_are_extracted_for_perception():
     assert [obj.class_name for obj in objects] == ["car", "traffic light"]
     assert objects[0].confidence == 0.90
     assert objects[1].bbox.x1 == 90
+
+
+def test_objects_are_labeled_with_nearest_lane_area_candidate():
+    detector = make_detector()
+    height, width = 180, 320
+    candidates = detector._lane_area_candidates_from_masks(
+        {
+            "lane1": straight_area_mask(height, width, center_x=75, y_start=25, y_end=166),
+            "lane2": straight_area_mask(height, width, center_x=172, y_start=25, y_end=166),
+        },
+        image_height=height,
+        image_width=width,
+        near_y=160,
+        far_y=60,
+        frame_center_x=160.0,
+    )
+    objects = (DetectedObject("car", 0.90, BoundingBox(150, 100, 190, 165)),)
+
+    labeled = detector._objects_with_lane_labels(objects, candidates, height, width)
+
+    assert labeled[0].lane_label == "lane2"
+    assert labeled[0].lane_distance_px is not None
 
 
 def test_right_target_selects_right_adjacent_lane_pair():

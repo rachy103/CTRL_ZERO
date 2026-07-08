@@ -4,7 +4,9 @@ import numpy as np
 
 from ctrl_zero.control import DriveConfig, DriveController
 from ctrl_zero.lidar import ObstacleDecision
+from ctrl_zero.perception import BoundingBox, DetectedObject
 from ctrl_zero.safety import (
+    SafetyDecision,
     build_safety_decision,
     fuse_safety_decisions,
     safety_from_lidar,
@@ -51,6 +53,40 @@ def test_green_traffic_light_keeps_lane_command():
     assert command.reason == "contest"
 
 
+def test_red_traffic_light_below_bbox_threshold_does_not_stop():
+    controller = DriveController(DriveConfig(min_confidence=0.1))
+    traffic_obj = DetectedObject("traffic_light", 0.95, BoundingBox(0, 0, 10, 10))
+    safety = build_safety_decision(
+        traffic_light_state="red",
+        traffic_light_object=traffic_obj,
+        traffic_light_frame_area=10000.0,
+        traffic_light_min_stop_area_ratio=0.020,
+    )
+
+    command = controller.compute(lane(), safety, "auto")
+
+    assert command.speed > 0
+    assert command.reason == "contest"
+    assert safety.traffic_light_area_ratio == 0.010
+
+
+def test_red_traffic_light_at_bbox_threshold_stops():
+    controller = DriveController(DriveConfig(min_confidence=0.1))
+    traffic_obj = DetectedObject("traffic_light", 0.95, BoundingBox(0, 0, 20, 20))
+    safety = build_safety_decision(
+        traffic_light_state="red",
+        traffic_light_object=traffic_obj,
+        traffic_light_frame_area=10000.0,
+        traffic_light_min_stop_area_ratio=0.020,
+    )
+
+    command = controller.compute(lane(), safety, "auto")
+
+    assert command.speed == 0
+    assert command.reason == "traffic_light_stop"
+    assert safety.traffic_light_area_ratio == 0.040
+
+
 def test_fuse_safety_decisions_uses_most_restrictive_speed_scale():
     lidar = safety_from_lidar(
         ObstacleDecision(nearest_front_mm=700.0, speed_scale=0.65, should_stop=False, front_points=4)
@@ -76,3 +112,21 @@ def test_fuse_safety_decisions_stop_overrides_slowdown():
     assert fused.speed_scale == 0.0
     assert fused.reason == "traffic_light_stop"
     assert fused.nearest_front_mm == 700.0
+
+
+def test_fuse_safety_decisions_preserves_lane_change_reason_without_speed_scale():
+    vision = SafetyDecision(
+        speed_scale=1.0,
+        should_stop=False,
+        reason="vision_obstacle_lane_change_lane1_to_lane2",
+        avoidance_steer=40.0,
+        current_lane_label="lane1",
+        target_lane_label="lane2",
+    )
+
+    fused = fuse_safety_decisions(safety_from_traffic_light("green"), vision)
+
+    assert not fused.should_stop
+    assert fused.speed_scale == 1.0
+    assert fused.avoidance_steer == 40.0
+    assert fused.reason == "vision_obstacle_lane_change_lane1_to_lane2"

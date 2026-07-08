@@ -11,7 +11,7 @@ import numpy as np
 from ctrl_zero.common import clamp
 from ctrl_zero.perception import BoundingBox, DetectedObject
 from ctrl_zero.traffic_light import traffic_light_state_from_objects
-from ctrl_zero.vision.base import LaneDetection, Point
+from ctrl_zero.vision.base import LaneDetection, LaneReference, Point
 from ctrl_zero.vision.preprocess import LanePreprocessor
 
 
@@ -374,6 +374,8 @@ class YOLOLaneDetector:
         masks_by_name = self._class_masks(result, h, w, target_names=("lane1", "lane2"))
         combined_mask = self._combined_mask_from_named_masks(masks_by_name, h, w)
         candidates = self._lane_area_candidates_from_masks(masks_by_name, h, w, near_y, far_y, frame_center_x)
+        lane_references = self._lane_references_from_candidates(candidates, near_y, far_y)
+        objects = self._objects_with_lane_labels(objects, candidates, h, w)
         selected = candidates[0] if candidates else None
 
         center_fit = selected.fit if selected is not None else None
@@ -441,6 +443,8 @@ class YOLOLaneDetector:
             mask=combined_mask,
             annotated=annotated,
             objects=objects,
+            lane_label=selected.name if selected is not None else "",
+            lane_references=lane_references,
             curvature=curvature,
             lane_pair_label=label,
             traffic_light_state=traffic_light_state,
@@ -485,6 +489,75 @@ class YOLOLaneDetector:
                 )
             )
         return sorted(candidates, key=lambda item: item.score)
+
+    @staticmethod
+    def _lane_references_from_candidates(
+        candidates: Sequence[LaneAreaCandidate],
+        near_y: int,
+        far_y: int,
+    ) -> dict[str, LaneReference]:
+        return {
+            candidate.name: LaneReference(
+                name=candidate.name,
+                near_x=candidate.near_x,
+                far_x=candidate.far_x,
+                near_y=near_y,
+                far_y=far_y,
+                width_px=candidate.width_px,
+                fit=candidate.fit,
+            )
+            for candidate in candidates
+        }
+
+    def _objects_with_lane_labels(
+        self,
+        objects: Sequence[DetectedObject],
+        candidates: Sequence[LaneAreaCandidate],
+        image_height: int,
+        image_width: int,
+    ) -> tuple[DetectedObject, ...]:
+        if not objects or not candidates:
+            return tuple(objects)
+
+        labeled: list[DetectedObject] = []
+        for obj in objects:
+            best_candidate = None
+            best_distance = float("inf")
+            y = float(clamp(obj.bbox.bottom_y, 0.0, image_height - 1.0))
+            for candidate in candidates:
+                x = self._x_at_y(candidate.fit, y)
+                if x is None:
+                    continue
+                distance = abs(obj.bbox.center_x - float(x))
+                if distance < best_distance:
+                    best_candidate = candidate
+                    best_distance = distance
+
+            lane_label = ""
+            lane_distance = None
+            if best_candidate is not None:
+                half_width = (
+                    best_candidate.width_px / 2.0
+                    if best_candidate.width_px is not None
+                    else image_width * 0.16
+                )
+                max_distance = max(image_width * 0.10, half_width + image_width * 0.04)
+                if best_distance <= max_distance:
+                    lane_label = best_candidate.name
+                    lane_distance = float(best_distance)
+
+            labeled.append(
+                DetectedObject(
+                    class_name=obj.class_name,
+                    confidence=obj.confidence,
+                    bbox=obj.bbox,
+                    class_id=obj.class_id,
+                    mask_area_px=obj.mask_area_px,
+                    lane_label=lane_label,
+                    lane_distance_px=lane_distance,
+                )
+            )
+        return tuple(labeled)
 
     def _class_masks(
         self,
@@ -587,6 +660,8 @@ class YOLOLaneDetector:
                     bbox=BoundingBox(float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))),
                     class_id=obj.class_id,
                     mask_area_px=obj.mask_area_px,
+                    lane_label=obj.lane_label,
+                    lane_distance_px=obj.lane_distance_px,
                 )
             )
         return tuple(mapped)
@@ -599,7 +674,8 @@ class YOLOLaneDetector:
             x2, y2 = int(round(box.x2)), int(round(box.y2))
             color = (0, 255, 255) if "traffic" in obj.compact_class_name else (0, 165, 255)
             cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
-            label = f"{obj.class_name} {obj.confidence:.2f}"
+            lane_suffix = f" {obj.lane_label}" if obj.lane_label else ""
+            label = f"{obj.class_name} {obj.confidence:.2f}{lane_suffix}"
             cv2.putText(image, label, (x1, max(14, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3)
             cv2.putText(image, label, (x1, max(14, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 

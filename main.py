@@ -12,7 +12,7 @@ from ctrl_zero.common import clamp
 from ctrl_zero.control import DriveConfig, DriveController
 from ctrl_zero.lidar import LidarConfig, LidarReader, ObstacleDecision, analyze_obstacles
 from ctrl_zero.logger import DriveLogger, LogConfig
-from ctrl_zero.obstacles import VisionObstacleConfig, analyze_vision_obstacles
+from ctrl_zero.obstacles import LaneChangeState, VisionObstacleConfig, analyze_vision_obstacles, apply_lane_change_for_obstacle
 from ctrl_zero.safety import build_safety_decision
 from ctrl_zero.traffic_light import traffic_light_object
 from ctrl_zero.ui import draw_status
@@ -54,9 +54,16 @@ LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 0.35
 
 # Vision obstacles
-VISION_OBSTACLE_ENABLED = True
-VISION_OBSTACLE_MIN_CONFIDENCE = 0.30
-VISION_OBSTACLE_SLOW_SPEED_SCALE = 0.45
+VISION_OBSTACLE_ENABLED = False
+VISION_OBSTACLE_MIN_CONFIDENCE = 0.4
+VISION_OBSTACLE_LANE_CHANGE_AREA_RATIO = 0.0
+VISION_OBSTACLE_AVOIDANCE_STEER_WEIGHT = 10.0
+VISION_OBSTACLE_AVOIDANCE_STEER_LIMIT = 80.0
+VISION_OBSTACLE_LANE_CHANGE_COMPLETE_OFFSET_NORM = 0.24
+VISION_OBSTACLE_LANE_CHANGE_COMPLETE_FRAMES = 2
+
+# Traffic light stop gating. Stop only when red/yellow bbox area reaches this frame-area ratio.
+TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.058
 
 # YOLO lane model. Use a lane-trained Ultralytics .pt file, not a generic COCO model.
 YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final.pt"
@@ -93,8 +100,8 @@ CONTROL_MODE = "contest"  # "contest" uses angle/position weights.
 MIN_SPEED = 230
 MAX_SPEED = 255
 MIN_LANE_CONFIDENCE_TO_DRIVE = 0.45
-CONTEST_ANGLE_WEIGHT = 0.8
-CONTEST_POSITION_WEIGHT = 0.07
+CONTEST_ANGLE_WEIGHT = 0.65
+CONTEST_POSITION_WEIGHT = 0.15
 CONTEST_STEERING_ANGLE_NORM_DEG = 50.0
 CONTEST_STEER_LIMIT = 10.0
 
@@ -111,9 +118,9 @@ MANUAL_STEER_HOLD_MS = 180
 
 # Display/logging
 DISPLAY_ENABLED = True
-SHOW_MASK_WINDOW = True
+SHOW_MASK_WINDOW = False
 LOG_ENABLED = False
-LOG_DIR = BASE_DIR / "lane_logs"
+LOG_DIR = BASE_DIR / "Log"
 SAVE_EVERY_N_FRAMES = 5
 PRINT_EVERY_N_FRAMES = 15
 
@@ -154,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-ports", action="store_true")
     parser.add_argument("--no-display", action="store_true")
     parser.add_argument("--log", action="store_true")
+    parser.add_argument("--no-log", action="store_true")
     return parser
 
 
@@ -252,9 +260,20 @@ def main() -> None:
     vision_obstacle_config = VisionObstacleConfig(
         enabled=VISION_OBSTACLE_ENABLED,
         min_confidence=VISION_OBSTACLE_MIN_CONFIDENCE,
-        slow_speed_scale=VISION_OBSTACLE_SLOW_SPEED_SCALE,
+        lane_change_area_ratio=VISION_OBSTACLE_LANE_CHANGE_AREA_RATIO,
+        avoidance_steer_weight=VISION_OBSTACLE_AVOIDANCE_STEER_WEIGHT,
+        avoidance_steer_limit=VISION_OBSTACLE_AVOIDANCE_STEER_LIMIT,
+        lane_change_complete_offset_norm=VISION_OBSTACLE_LANE_CHANGE_COMPLETE_OFFSET_NORM,
+        lane_change_complete_frames=VISION_OBSTACLE_LANE_CHANGE_COMPLETE_FRAMES,
     )
-    logger = DriveLogger(LogConfig(enabled=LOG_ENABLED or args.log, directory=LOG_DIR, save_every_n_frames=SAVE_EVERY_N_FRAMES))
+    lane_change_state = LaneChangeState()
+    logger = DriveLogger(
+        LogConfig(
+            enabled=(LOG_ENABLED or args.log) and not args.no_log,
+            directory=LOG_DIR,
+            save_every_n_frames=SAVE_EVERY_N_FRAMES,
+        )
+    )
 
     manual_steer = 0
     manual_steer_until = 0.0
@@ -294,13 +313,23 @@ def main() -> None:
                 manual_steer = 0
 
             vision_obstacle = analyze_vision_obstacles(lane, vision_obstacle_config)
+            lane_for_control, vision_obstacle = apply_lane_change_for_obstacle(
+                lane,
+                vision_obstacle,
+                vision_obstacle_config,
+                lane_change_state,
+            )
+            traffic_obj = traffic_light_object(lane_for_control.objects)
+            frame_area = float(max(lane_for_control.annotated.shape[0] * lane_for_control.annotated.shape[1], 1))
             safety = build_safety_decision(
                 lidar=last_obstacle,
-                traffic_light_state=lane.traffic_light_state,
-                traffic_light_object=traffic_light_object(lane.objects),
+                traffic_light_state=lane_for_control.traffic_light_state,
+                traffic_light_object=traffic_obj,
+                traffic_light_frame_area=frame_area,
+                traffic_light_min_stop_area_ratio=TRAFFIC_LIGHT_STOP_AREA_RATIO,
                 vision_obstacle_decision=vision_obstacle,
             )
-            command = controller.compute(lane, safety, args.mode, manual_steer=manual_steer, manual_speed=manual_speed)
+            command = controller.compute(lane_for_control, safety, args.mode, manual_steer=manual_steer, manual_speed=manual_speed)
             motor.send(command.steer, command.speed if motor_enabled else 0)
 
             now = time.perf_counter()
@@ -310,20 +339,20 @@ def main() -> None:
 
             if frame_count % PRINT_EVERY_N_FRAMES == 0:
                 print(
-                    f"frame={frame_count} fps={fps:.1f} conf={lane.confidence:.2f} "
+                    f"frame={frame_count} fps={fps:.1f} conf={lane_for_control.confidence:.2f} "
                     f"steer={command.steer:+d} speed={command.speed:+d} reason={command.reason}",
                     flush=True,
                 )
 
-            logger.log(frame, args.mode, args.backend, lane, safety, command)
+            logger.log(frame, args.mode, args.backend, lane_for_control, safety, command)
 
             key = -1
             if display_enabled:
-                display = lane.annotated
-                draw_status(display, lane, safety, command, args.mode, args.backend, fps, motor_enabled)
+                display = lane_for_control.annotated
+                draw_status(display, lane_for_control, safety, command, args.mode, args.backend, fps, motor_enabled)
                 cv2.imshow("CTRL_ZERO", display)
-                if SHOW_MASK_WINDOW and lane.mask is not None:
-                    cv2.imshow("CTRL_ZERO lane mask", lane.mask)
+                if SHOW_MASK_WINDOW and lane_for_control.mask is not None:
+                    cv2.imshow("CTRL_ZERO lane mask", lane_for_control.mask)
                 key = cv2.waitKey(1) & 0xFF
 
             if key == ord("q"):
