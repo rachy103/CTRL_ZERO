@@ -16,7 +16,7 @@ from ctrl_zero.obstacles import LaneChangeState, VisionObstacleConfig, analyze_v
 from ctrl_zero.safety import build_safety_decision
 from ctrl_zero.traffic_light import traffic_light_object
 from ctrl_zero.ui import draw_status
-from ctrl_zero.vision.preprocess import LanePreprocessor
+from ctrl_zero.vision.preprocess import BirdEyeConfig, LanePreprocessor, ROICropConfig
 
 
 # =============================================================================
@@ -54,12 +54,12 @@ LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 0.35
 
 # Vision obstacles
-VISION_OBSTACLE_ENABLED = False
+VISION_OBSTACLE_ENABLED = True
 VISION_OBSTACLE_MIN_CONFIDENCE = 0.4
 VISION_OBSTACLE_LANE_CHANGE_AREA_RATIO = 0.0
-VISION_OBSTACLE_AVOIDANCE_STEER_WEIGHT = 10.0
+VISION_OBSTACLE_AVOIDANCE_STEER_WEIGHT = 15.0
 VISION_OBSTACLE_AVOIDANCE_STEER_LIMIT = 80.0
-VISION_OBSTACLE_LANE_CHANGE_COMPLETE_OFFSET_NORM = 0.24
+VISION_OBSTACLE_LANE_CHANGE_COMPLETE_OFFSET_NORM = 0.10
 VISION_OBSTACLE_LANE_CHANGE_COMPLETE_FRAMES = 2
 
 # Traffic light stop gating. Stop only when red/yellow bbox area reaches this frame-area ratio.
@@ -88,7 +88,23 @@ YOLO_DRIVABLE_EDGE_PERCENTILE = 2.0
 YOLO_TARGET_LANE_PAIR = "right"  # "right"=right lane, "left"=left lane, "closest"=nearest pair.
 YOLO_TARGET_PATH_MODE = "closest_line"  # "closest_line" follows one line. "lane_center" follows the lane pair center.
 YOLO_LANE_PAIR_SELECT_Y_RATIO = 0.78
-YOLO_LANE_PAIR_TARGET_OFFSET_RATIO = 0.0
+YOLO_LANE_PAIR_TARGET_OFFSET_RATIO = -0.03
+YOLO_DISPLAY_BIRD_EYE_VIEW = True
+
+# Camera/IPM preprocessing. Bird-eye source points are image ratios in this order:
+# bottom-left, bottom-right, top-right, top-left.
+ROI_ENABLED = False
+ROI_TOP_RATIO = 0.0
+ROI_BOTTOM_RATIO = 1.0
+ROI_LEFT_RATIO = 0.0
+ROI_RIGHT_RATIO = 1.0
+BIRD_EYE_ENABLED = False
+BIRD_EYE_SRC_BOTTOM_LEFT = (0.10, 0.98)
+BIRD_EYE_SRC_BOTTOM_RIGHT = (0.90, 0.98)
+BIRD_EYE_SRC_TOP_RIGHT = (0.62, 0.35)
+BIRD_EYE_SRC_TOP_LEFT = (0.38, 0.35)
+BIRD_EYE_DST_MARGIN_RATIO = 0.18
+BIRD_EYE_MASK_SOURCE_POLYGON = True
 
 # Shared lane geometry
 DEFAULT_LANE_WIDTH_RATIO = 0.50
@@ -100,8 +116,8 @@ CONTROL_MODE = "contest"  # "contest" uses angle/position weights.
 MIN_SPEED = 230
 MAX_SPEED = 255
 MIN_LANE_CONFIDENCE_TO_DRIVE = 0.45
-CONTEST_ANGLE_WEIGHT = 0.65
-CONTEST_POSITION_WEIGHT = 0.15
+CONTEST_ANGLE_WEIGHT = 0.45
+CONTEST_POSITION_WEIGHT = 0.10
 CONTEST_STEERING_ANGLE_NORM_DEG = 50.0
 CONTEST_STEER_LIMIT = 10.0
 
@@ -123,6 +139,20 @@ LOG_ENABLED = False
 LOG_DIR = BASE_DIR / "Log"
 SAVE_EVERY_N_FRAMES = 5
 PRINT_EVERY_N_FRAMES = 15
+
+
+def parse_ratio_point(value: str) -> tuple[float, float]:
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("expected x,y ratio pair, for example 0.38,0.35")
+    try:
+        x_ratio = float(parts[0])
+        y_ratio = float(parts[1])
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("ratio point values must be numbers") from exc
+    if not 0.0 <= x_ratio <= 1.0 or not 0.0 <= y_ratio <= 1.0:
+        raise argparse.ArgumentTypeError("ratio point values must be between 0.0 and 1.0")
+    return x_ratio, y_ratio
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -151,6 +181,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yolo-target-path", choices=("closest_line", "left_line", "right_line", "lane_center"), default=YOLO_TARGET_PATH_MODE)
     parser.add_argument("--yolo-pair-select-y", type=float, default=YOLO_LANE_PAIR_SELECT_Y_RATIO)
     parser.add_argument("--yolo-pair-target-offset", type=float, default=YOLO_LANE_PAIR_TARGET_OFFSET_RATIO)
+    parser.add_argument("--yolo-display-bird-eye", action=argparse.BooleanOptionalAction, default=YOLO_DISPLAY_BIRD_EYE_VIEW)
+    parser.add_argument("--roi", action=argparse.BooleanOptionalAction, default=ROI_ENABLED)
+    parser.add_argument("--roi-top", type=float, default=ROI_TOP_RATIO)
+    parser.add_argument("--roi-bottom", type=float, default=ROI_BOTTOM_RATIO)
+    parser.add_argument("--roi-left", type=float, default=ROI_LEFT_RATIO)
+    parser.add_argument("--roi-right", type=float, default=ROI_RIGHT_RATIO)
+    parser.add_argument("--bird-eye", action=argparse.BooleanOptionalAction, default=BIRD_EYE_ENABLED)
+    parser.add_argument("--bird-eye-src-bottom-left", type=parse_ratio_point, default=BIRD_EYE_SRC_BOTTOM_LEFT)
+    parser.add_argument("--bird-eye-src-bottom-right", type=parse_ratio_point, default=BIRD_EYE_SRC_BOTTOM_RIGHT)
+    parser.add_argument("--bird-eye-src-top-right", type=parse_ratio_point, default=BIRD_EYE_SRC_TOP_RIGHT)
+    parser.add_argument("--bird-eye-src-top-left", type=parse_ratio_point, default=BIRD_EYE_SRC_TOP_LEFT)
+    parser.add_argument("--bird-eye-dst-margin", type=float, default=BIRD_EYE_DST_MARGIN_RATIO)
+    parser.add_argument("--bird-eye-mask-source-polygon", action=argparse.BooleanOptionalAction, default=BIRD_EYE_MASK_SOURCE_POLYGON)
     parser.add_argument("--camera-index", type=int, default=CAMERA_INDEX)
     parser.add_argument("--camera-backend", choices=("dshow", "msmf", "any"), default=CAMERA_BACKEND)
     parser.add_argument("--camera-width", type=int, default=CAMERA_WIDTH)
@@ -163,6 +206,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log", action="store_true")
     parser.add_argument("--no-log", action="store_true")
     return parser
+
+
+def build_preprocessor(args) -> LanePreprocessor:
+    return LanePreprocessor(
+        roi=ROICropConfig(
+            enabled=args.roi,
+            top_ratio=args.roi_top,
+            bottom_ratio=args.roi_bottom,
+            left_ratio=args.roi_left,
+            right_ratio=args.roi_right,
+        ),
+        bird_eye=BirdEyeConfig(
+            enabled=args.bird_eye,
+            src_bottom_left=args.bird_eye_src_bottom_left,
+            src_bottom_right=args.bird_eye_src_bottom_right,
+            src_top_right=args.bird_eye_src_top_right,
+            src_top_left=args.bird_eye_src_top_left,
+            dst_margin_ratio=args.bird_eye_dst_margin,
+            mask_source_polygon=args.bird_eye_mask_source_polygon,
+        ),
+    )
 
 
 def build_lane_detector(args):
@@ -197,8 +261,8 @@ def build_lane_detector(args):
             default_lane_width_ratio=DEFAULT_LANE_WIDTH_RATIO,
             min_lane_width_ratio=MIN_LANE_WIDTH_RATIO,
             max_lane_width_ratio=MAX_LANE_WIDTH_RATIO,
-            display_bird_eye_view=False,
-            preprocessor=LanePreprocessor(),
+            display_bird_eye_view=args.yolo_display_bird_eye,
+            preprocessor=build_preprocessor(args),
         )
     )
     return FrameSkippingLaneDetector(detector, skip=args.yolo_frame_skip) if args.yolo_frame_skip > 1 else detector

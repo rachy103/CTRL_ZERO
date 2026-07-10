@@ -25,7 +25,7 @@ class VisionObstacleConfig:
     lane_change_complete_frames: int = 2
     corridor_width_ratio: float = 0.45
     corridor_margin_ratio: float = 0.08
-    far_y_ratio: float = 0.15
+    far_y_ratio: float = 0.10
 
 
 @dataclass

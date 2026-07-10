@@ -8,13 +8,13 @@
 //   ?\n
 //   prints current potentiometer count, target count, steer target, and drive PWM.
 
-const int DRIVE_L_IN1 = 2;
-const int DRIVE_L_IN2 = 3;
-const int DRIVE_R_IN1 = 4;
-const int DRIVE_R_IN2 = 5;
-const int STEER_IN1 = 6;
-const int STEER_IN2 = 7;
-const int STEER_POT = A5;
+const int DRIVE_L_IN1 = 4;
+const int DRIVE_L_IN2 = 5;
+const int DRIVE_R_IN1 = 6;
+const int DRIVE_R_IN2 = 7;
+const int STEER_IN1 = 2;
+const int STEER_IN2 = 3;
+const int STEER_POT = A0;
 
 const bool DRIVE_L_INVERTED = true;
 const bool DRIVE_R_INVERTED = true;
