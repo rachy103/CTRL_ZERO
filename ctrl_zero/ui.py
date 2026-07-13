@@ -31,6 +31,8 @@ def draw_status(
     avoid_text = "0"
     if isinstance(obstacle, SafetyDecision) and obstacle.avoidance_steer != 0.0:
         avoid_text = f"{obstacle.avoidance_steer:+.0f}->{obstacle.target_lane_label}"
+    elif isinstance(obstacle, SafetyDecision) and obstacle.target_lane_label:
+        avoid_text = f"path->{obstacle.target_lane_label}"
     traffic_ratio = "NA"
     if isinstance(obstacle, SafetyDecision) and obstacle.traffic_light_area_ratio is not None:
         traffic_ratio = f"{obstacle.traffic_light_area_ratio:.3f}"

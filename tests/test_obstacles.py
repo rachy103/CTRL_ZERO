@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from ctrl_zero.lidar import ObstacleDecision
 from ctrl_zero.obstacles import LaneChangeState, VisionObstacleConfig, analyze_vision_obstacles, apply_lane_change_for_obstacle
@@ -112,8 +113,12 @@ def test_current_lane_obstacle_changes_target_to_other_lane():
 
     assert changed_lane.lane_label == "lane1"
     assert changed_decision.speed_scale == 1.0
-    assert changed_decision.avoidance_steer == 80.0
+    assert changed_decision.avoidance_steer == 0.0
     assert changed_decision.target_lane_label == "lane2"
+    assert changed_lane.lane_center_near_x == pytest.approx(60.0)
+    assert 60.0 < changed_lane.lane_center_far_x < 140.0
+    assert changed_lane.heading_deg > 0.0
+    assert "avoidance_path=lane1->lane2" in changed_lane.lane_pair_label
     assert not changed_decision.should_stop
     assert changed_decision.reason == "vision_obstacle_lane_change_lane1_to_lane2"
 
@@ -148,8 +153,12 @@ def test_lane2_obstacle_changes_target_to_lane1():
     changed_lane, changed_decision = apply_lane_change_for_obstacle(lane, decision, VisionObstacleConfig())
 
     assert changed_lane.lane_label == "lane2"
-    assert changed_decision.avoidance_steer == -80.0
+    assert changed_decision.avoidance_steer == 0.0
     assert changed_decision.target_lane_label == "lane1"
+    assert changed_lane.lane_center_near_x == pytest.approx(140.0)
+    assert 60.0 < changed_lane.lane_center_far_x < 140.0
+    assert changed_lane.heading_deg < 0.0
+    assert "avoidance_path=lane2->lane1" in changed_lane.lane_pair_label
     assert changed_decision.reason == "vision_obstacle_lane_change_lane2_to_lane1"
 
 
@@ -177,6 +186,26 @@ def test_active_lane_change_locks_target_until_completion():
     assert first_change.target_lane_label == "lane2"
     assert mid_change.target_lane_label == "lane2"
     assert mid_change.reason == "vision_obstacle_lane_change_lane1_to_lane2"
+
+
+def test_active_lane_change_advances_virtual_path_gradually():
+    state = LaneChangeState()
+    config = VisionObstacleConfig(lane_change_path_progress_step=0.25)
+    lane_start = lane_with_objects(
+        [obj("car", BoundingBox(40, 100, 80, 170), lane_label="lane1")],
+        lane_label="lane1",
+        lane_references=two_lane_references(),
+    )
+    first_decision = analyze_vision_obstacles(lane_start, config)
+    first_lane, _ = apply_lane_change_for_obstacle(lane_start, first_decision, config, state)
+
+    next_decision = analyze_vision_obstacles(lane_start, config)
+    second_lane, _ = apply_lane_change_for_obstacle(lane_start, next_decision, config, state)
+
+    assert first_lane.lane_center_near_x == pytest.approx(60.0)
+    assert first_lane.lane_center_far_x > first_lane.lane_center_near_x
+    assert first_lane.lane_center_far_x < second_lane.lane_center_far_x
+    assert first_lane.lane_center_near_x < second_lane.lane_center_near_x < 140.0
 
 
 def test_new_lane_change_can_start_after_previous_change_completes():

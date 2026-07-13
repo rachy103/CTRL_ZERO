@@ -9,7 +9,7 @@ import cv2
 from ctrl_zero.arduino import ArduinoConfig, ArduinoMotorController, format_serial_ports
 from ctrl_zero.camera import CameraConfig, CameraReader
 from ctrl_zero.common import clamp
-from ctrl_zero.control import DriveConfig, DriveController
+from ctrl_zero.control import DriveCommand, DriveConfig, DriveController
 from ctrl_zero.lidar import LidarConfig, LidarReader, ObstacleDecision, analyze_obstacles
 from ctrl_zero.logger import DriveLogger, LogConfig
 from ctrl_zero.obstacles import LaneChangeState, VisionObstacleConfig, analyze_vision_obstacles, apply_lane_change_for_obstacle
@@ -54,11 +54,13 @@ LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 0.35
 
 # Vision obstacles
-VISION_OBSTACLE_ENABLED = True
+VISION_OBSTACLE_ENABLED = False
 VISION_OBSTACLE_MIN_CONFIDENCE = 0.4
 VISION_OBSTACLE_LANE_CHANGE_AREA_RATIO = 0.0
 VISION_OBSTACLE_AVOIDANCE_STEER_WEIGHT = 15.0
 VISION_OBSTACLE_AVOIDANCE_STEER_LIMIT = 80.0
+VISION_OBSTACLE_LANE_CHANGE_PATH_PROGRESS_STEP = 0.12
+VISION_OBSTACLE_LANE_CHANGE_PATH_LOOKAHEAD_PROGRESS = 0.35
 VISION_OBSTACLE_LANE_CHANGE_COMPLETE_OFFSET_NORM = 0.10
 VISION_OBSTACLE_LANE_CHANGE_COMPLETE_FRAMES = 2
 
@@ -140,6 +142,8 @@ LOG_DIR = BASE_DIR / "Log"
 SAVE_EVERY_N_FRAMES = 5
 PRINT_EVERY_N_FRAMES = 15
 
+START_KEYS = (ord("d"), ord("D"))
+
 
 def parse_ratio_point(value: str) -> tuple[float, float]:
     parts = [part.strip() for part in value.split(",")]
@@ -153,6 +157,25 @@ def parse_ratio_point(value: str) -> tuple[float, float]:
     if not 0.0 <= x_ratio <= 1.0 or not 0.0 <= y_ratio <= 1.0:
         raise argparse.ArgumentTypeError("ratio point values must be between 0.0 and 1.0")
     return x_ratio, y_ratio
+
+
+def is_start_key(key: int) -> bool:
+    return key in START_KEYS
+
+
+def read_console_key() -> int:
+    try:
+        import msvcrt
+    except ImportError:
+        return -1
+
+    if not msvcrt.kbhit():
+        return -1
+    key = msvcrt.getwch()
+    if key in ("\x00", "\xe0"):
+        msvcrt.getwch()
+        return -1
+    return ord(key)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -327,6 +350,8 @@ def main() -> None:
         lane_change_area_ratio=VISION_OBSTACLE_LANE_CHANGE_AREA_RATIO,
         avoidance_steer_weight=VISION_OBSTACLE_AVOIDANCE_STEER_WEIGHT,
         avoidance_steer_limit=VISION_OBSTACLE_AVOIDANCE_STEER_LIMIT,
+        lane_change_path_progress_step=VISION_OBSTACLE_LANE_CHANGE_PATH_PROGRESS_STEP,
+        lane_change_path_lookahead_progress=VISION_OBSTACLE_LANE_CHANGE_PATH_LOOKAHEAD_PROGRESS,
         lane_change_complete_offset_norm=VISION_OBSTACLE_LANE_CHANGE_COMPLETE_OFFSET_NORM,
         lane_change_complete_frames=VISION_OBSTACLE_LANE_CHANGE_COMPLETE_FRAMES,
     )
@@ -345,6 +370,7 @@ def main() -> None:
     frame_count = 0
     fps = 0.0
     last_time = time.perf_counter()
+    drive_started = not motor_enabled
 
     try:
         motor.open()
@@ -353,9 +379,11 @@ def main() -> None:
             lidar.open()
         logger.open()
 
-        print("Keys: q quit, space stop, +/- max speed, l toggle log.")
-        print("Manual mode keys: w/s speed, a/d steer pulse, c center steer.")
+        print("Keys: q quit, d start/resume, space stop/wait, +/- max speed, l toggle log.")
+        print("Manual mode keys after start: w/s speed, a/d steer pulse, c center steer.")
         print(f"Runtime: mode={args.mode}, backend={args.backend}, motor={'on' if motor_enabled else 'dry'}")
+        if motor_enabled:
+            print("Drive is waiting. Press d/D to start motor output.")
 
         while True:
             ret, frame = camera.read()
@@ -393,7 +421,16 @@ def main() -> None:
                 traffic_light_min_stop_area_ratio=TRAFFIC_LIGHT_STOP_AREA_RATIO,
                 vision_obstacle_decision=vision_obstacle,
             )
-            command = controller.compute(lane_for_control, safety, args.mode, manual_steer=manual_steer, manual_speed=manual_speed)
+            if drive_started:
+                command = controller.compute(
+                    lane_for_control,
+                    safety,
+                    args.mode,
+                    manual_steer=manual_steer,
+                    manual_speed=manual_speed,
+                )
+            else:
+                command = DriveCommand(steer=0, speed=0, reason="waiting_for_start")
             motor.send(command.steer, command.speed if motor_enabled else 0)
 
             now = time.perf_counter()
@@ -418,14 +455,25 @@ def main() -> None:
                 if SHOW_MASK_WINDOW and lane_for_control.mask is not None:
                     cv2.imshow("CTRL_ZERO lane mask", lane_for_control.mask)
                 key = cv2.waitKey(1) & 0xFF
+            else:
+                key = read_console_key()
 
             if key == ord("q"):
                 break
+            started_this_frame = False
             if key == ord(" "):
                 manual_speed = 0
                 manual_steer = 0
                 manual_steer_until = 0.0
+                if motor_enabled:
+                    drive_started = False
                 motor.stop()
+                if motor_enabled:
+                    print("Drive paused. Press d/D to start motor output.")
+            elif motor_enabled and not drive_started and is_start_key(key):
+                drive_started = True
+                started_this_frame = True
+                print("Drive started.")
             elif key in (ord("+"), ord("=")):
                 controller.config.max_speed = int(clamp(controller.config.max_speed + 5, 0, MAX_SPEED))
             elif key in (ord("-"), ord("_")):
@@ -434,7 +482,7 @@ def main() -> None:
                 logger.set_enabled(not logger.config.enabled)
                 print(f"Logging {'enabled' if logger.config.enabled else 'disabled'}")
 
-            if args.mode == "manual":
+            if args.mode == "manual" and not started_this_frame:
                 if key == ord("w"):
                     manual_speed = int(clamp(manual_speed + MANUAL_SPEED_STEP, -MAX_SPEED, MAX_SPEED))
                 elif key == ord("s"):

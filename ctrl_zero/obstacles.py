@@ -4,6 +4,10 @@ import math
 from dataclasses import dataclass, replace
 from typing import Iterable
 
+import cv2
+import numpy as np
+
+from ctrl_zero.common import clamp
 from ctrl_zero.perception import DetectedObject, compact_class_name
 from ctrl_zero.safety import SafetyDecision
 from ctrl_zero.vision.base import LaneDetection
@@ -21,6 +25,8 @@ class VisionObstacleConfig:
     lane_change_area_ratio: float = 0.060
     avoidance_steer_weight: float = 1.0
     avoidance_steer_limit: float = 80.0
+    lane_change_path_progress_step: float = 0.12
+    lane_change_path_lookahead_progress: float = 0.35
     lane_change_complete_offset_norm: float = 0.12
     lane_change_complete_frames: int = 2
     corridor_width_ratio: float = 0.45
@@ -34,6 +40,7 @@ class LaneChangeState:
     source_lane_label: str = ""
     target_lane_label: str = ""
     completed_frames: int = 0
+    progress: float = 0.0
     vision_obstacle: DetectedObject | None = None
 
     def start(self, source_lane_label: str, target_lane_label: str, vision_obstacle: DetectedObject | None) -> None:
@@ -41,6 +48,7 @@ class LaneChangeState:
         self.source_lane_label = source_lane_label
         self.target_lane_label = target_lane_label
         self.completed_frames = 0
+        self.progress = 0.0
         self.vision_obstacle = vision_obstacle
 
     def clear(self) -> None:
@@ -48,6 +56,7 @@ class LaneChangeState:
         self.source_lane_label = ""
         self.target_lane_label = ""
         self.completed_frames = 0
+        self.progress = 0.0
         self.vision_obstacle = None
 
 
@@ -100,7 +109,10 @@ def apply_lane_change_for_obstacle(
                 return lane, decision
         else:
             state.completed_frames = 0
-        return lane, _active_lane_change_decision(lane, decision, config, state)
+        path_lane = _lane_detection_for_avoidance_path(lane, config, state)
+        active_decision = _active_lane_change_decision(path_lane, decision, config, state)
+        _advance_lane_change_progress(state, config)
+        return path_lane, active_decision
 
     if decision.vision_obstacle is None:
         return lane, decision
@@ -122,20 +134,22 @@ def apply_lane_change_for_obstacle(
     if target is None:
         return lane, decision
 
+    active_state = state or LaneChangeState()
+    active_state.start(current_label, target_label, decision.vision_obstacle)
+    path_lane = _lane_detection_for_avoidance_path(lane, config, active_state)
     if state is not None:
-        state.start(current_label, target_label, decision.vision_obstacle)
+        _advance_lane_change_progress(state, config)
 
-    avoidance_steer = _avoidance_steer_for_reference(lane, target, config, source_label=current_label)
     lane_change_decision = replace(
         decision,
         speed_scale=1.0,
         should_stop=False,
-        avoidance_steer=avoidance_steer,
+        avoidance_steer=0.0,
         current_lane_label=current_label,
         target_lane_label=target_label,
         reason=f"vision_obstacle_lane_change_{current_label}_to_{target_label}",
     )
-    return lane, lane_change_decision
+    return path_lane, lane_change_decision
 
 
 def _active_lane_change_decision(
@@ -161,7 +175,7 @@ def _active_lane_change_decision(
         speed_scale=1.0,
         should_stop=False,
         vision_obstacle=decision.vision_obstacle or state.vision_obstacle,
-        avoidance_steer=_avoidance_steer_for_reference(lane, target, config, source_label=state.source_lane_label),
+        avoidance_steer=0.0,
         current_lane_label=state.source_lane_label,
         target_lane_label=state.target_lane_label,
         reason=f"vision_obstacle_lane_change_{state.source_lane_label}_to_{state.target_lane_label}",
@@ -279,6 +293,124 @@ def _lane_detection_for_reference(lane: LaneDetection, target_label: str, target
         lane_label=target_label,
         lane_pair_label=f"{lane.lane_pair_label} lane_change={_current_lane_label(lane)}->{target_label}",
     )
+
+
+def _lane_detection_for_avoidance_path(
+    lane: LaneDetection,
+    config: VisionObstacleConfig,
+    state: LaneChangeState,
+) -> LaneDetection:
+    target = lane.lane_references.get(state.target_lane_label)
+    if target is None:
+        return lane
+
+    source = lane.lane_references.get(state.source_lane_label)
+    near_y = target.near_y
+    far_y = target.far_y
+    progress_near = _smoothstep(state.progress)
+    progress_far = _smoothstep(min(1.0, state.progress + config.lane_change_path_lookahead_progress))
+
+    source_near = _source_x_at_y(lane, source, near_y)
+    source_far = _source_x_at_y(lane, source, far_y)
+    target_near = _reference_x_at_y(target.near_x, target.far_x, target.near_y, target.far_y, near_y)
+    target_far = _reference_x_at_y(target.near_x, target.far_x, target.near_y, target.far_y, far_y)
+
+    center_near = _lerp(source_near, target_near, progress_near)
+    center_far = _lerp(source_far, target_far, progress_far)
+    offset_px = center_near - lane.frame_center_x
+    offset_norm = offset_px / max(lane.frame_center_x, 1.0)
+    heading_deg = math.degrees(math.atan2(center_far - center_near, max(near_y - far_y, 1)))
+    path_points = _avoidance_path_points(lane, source, target, progress_near, progress_far)
+    annotated = _draw_avoidance_path(lane.annotated, path_points, state)
+
+    return replace(
+        lane,
+        left_fit=None,
+        right_fit=None,
+        lanes=[path_points] if len(path_points) >= 2 else lane.lanes,
+        lane_center_near_x=center_near,
+        lane_center_far_x=center_far,
+        offset_px=offset_px,
+        offset_norm=offset_norm,
+        heading_deg=heading_deg,
+        lane_width_px=target.width_px or lane.lane_width_px,
+        lane_label=state.source_lane_label,
+        lane_pair_label=f"{lane.lane_pair_label} avoidance_path={state.source_lane_label}->{state.target_lane_label} progress={state.progress:.2f}",
+        annotated=annotated,
+    )
+
+
+def _source_x_at_y(lane: LaneDetection, source, y: float) -> float:
+    if source is not None:
+        return _reference_x_at_y(source.near_x, source.far_x, source.near_y, source.far_y, y)
+    return _lane_center_x_at_y(lane, y, lane.annotated.shape[0])
+
+
+def _avoidance_path_points(
+    lane: LaneDetection,
+    source,
+    target,
+    progress_near: float,
+    progress_far: float,
+) -> list[tuple[int, int]]:
+    step = 6
+    near_y = target.near_y
+    far_y = target.far_y
+    points: list[tuple[int, int]] = []
+    for y in range(int(far_y), int(near_y) + 1, step):
+        vertical = min(max((y - far_y) / max(float(near_y - far_y), 1.0), 0.0), 1.0)
+        progress = _lerp(progress_far, progress_near, vertical)
+        source_x = _source_x_at_y(lane, source, y)
+        target_x = _reference_x_at_y(target.near_x, target.far_x, target.near_y, target.far_y, y)
+        x = _lerp(source_x, target_x, progress)
+        points.append((int(round(clamp(x, 0.0, lane.annotated.shape[1] - 1.0))), int(y)))
+    if not points or points[-1][1] != int(near_y):
+        source_x = _source_x_at_y(lane, source, near_y)
+        target_x = _reference_x_at_y(target.near_x, target.far_x, target.near_y, target.far_y, near_y)
+        x = _lerp(source_x, target_x, progress_near)
+        points.append((int(round(clamp(x, 0.0, lane.annotated.shape[1] - 1.0))), int(near_y)))
+    return points
+
+
+def _draw_avoidance_path(image: np.ndarray, points: list[tuple[int, int]], state: LaneChangeState) -> np.ndarray:
+    annotated = image.copy()
+    if len(points) >= 2:
+        cv2.polylines(annotated, [np.array(points, dtype=np.int32)], isClosed=False, color=(255, 0, 255), thickness=3)
+        cv2.circle(annotated, points[-1], 6, (255, 0, 255), -1)
+    cv2.putText(
+        annotated,
+        f"avoid_path {state.source_lane_label}->{state.target_lane_label} p={state.progress:.2f}",
+        (10, max(annotated.shape[0] - 18, 18)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (0, 0, 0),
+        3,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        annotated,
+        f"avoid_path {state.source_lane_label}->{state.target_lane_label} p={state.progress:.2f}",
+        (10, max(annotated.shape[0] - 18, 18)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 0, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    return annotated
+
+
+def _advance_lane_change_progress(state: LaneChangeState, config: VisionObstacleConfig) -> None:
+    state.progress = min(1.0, state.progress + max(config.lane_change_path_progress_step, 0.0))
+
+
+def _smoothstep(value: float) -> float:
+    clipped = min(max(value, 0.0), 1.0)
+    return clipped * clipped * (3.0 - 2.0 * clipped)
+
+
+def _lerp(start: float, end: float, amount: float) -> float:
+    return start + (end - start) * amount
 
 
 def _avoidance_steer_for_reference(

@@ -130,3 +130,21 @@ def test_fuse_safety_decisions_preserves_lane_change_reason_without_speed_scale(
     assert fused.speed_scale == 1.0
     assert fused.avoidance_steer == 40.0
     assert fused.reason == "vision_obstacle_lane_change_lane1_to_lane2"
+
+
+def test_fuse_safety_decisions_preserves_lane_change_path_reason_without_avoidance_steer():
+    vision = SafetyDecision(
+        speed_scale=1.0,
+        should_stop=False,
+        reason="vision_obstacle_lane_change_lane1_to_lane2",
+        current_lane_label="lane1",
+        target_lane_label="lane2",
+    )
+
+    fused = fuse_safety_decisions(safety_from_traffic_light("green"), vision)
+
+    assert not fused.should_stop
+    assert fused.speed_scale == 1.0
+    assert fused.avoidance_steer == 0.0
+    assert fused.target_lane_label == "lane2"
+    assert fused.reason == "vision_obstacle_lane_change_lane1_to_lane2"

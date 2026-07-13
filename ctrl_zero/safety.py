@@ -84,7 +84,10 @@ def fuse_safety_decisions(*decisions: SafetyDecision | None) -> SafetyDecision:
         None,
     )
     vision_obstacle = next((decision.vision_obstacle for decision in active if decision.vision_obstacle is not None), None)
-    avoidance_decision = next((decision for decision in active if decision.avoidance_steer != 0.0), None)
+    avoidance_decision = next(
+        (decision for decision in active if decision.avoidance_steer != 0.0 or decision.target_lane_label),
+        None,
+    )
 
     stop_decisions = [decision for decision in active if decision.should_stop]
     if stop_decisions:
@@ -108,7 +111,7 @@ def fuse_safety_decisions(*decisions: SafetyDecision | None) -> SafetyDecision:
     selected = min(active, key=lambda decision: decision.speed_scale)
     if selected.speed_scale >= 1.0:
         selected = avoidance_decision or next((decision for decision in active if decision.reason != "clear"), selected)
-    reason = selected.reason if selected.speed_scale < 1.0 or selected.avoidance_steer != 0.0 else "clear"
+    reason = selected.reason if selected.speed_scale < 1.0 or selected.avoidance_steer != 0.0 or selected.target_lane_label else "clear"
     return SafetyDecision(
         nearest_front_mm=lidar_decision.nearest_front_mm if lidar_decision is not None else None,
         speed_scale=selected.speed_scale,
