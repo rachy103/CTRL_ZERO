@@ -12,8 +12,8 @@ from ctrl_zero.common import clamp
 from ctrl_zero.control import DriveCommand, DriveConfig, DriveController
 from ctrl_zero.lidar import LidarConfig, LidarReader, ObstacleDecision, analyze_obstacles
 from ctrl_zero.logger import DriveLogger, LogConfig
-from ctrl_zero.obstacles import LaneChangeState, VisionObstacleConfig, analyze_vision_obstacles, apply_lane_change_for_obstacle
-from ctrl_zero.safety import build_safety_decision
+from ctrl_zero.obstacles import ContestObstacleMission, ContestObstacleMissionConfig
+from ctrl_zero.safety import SafetyDecision, build_safety_decision
 from ctrl_zero.traffic_light import traffic_light_object
 from ctrl_zero.ui import draw_status
 from ctrl_zero.vision.preprocess import BirdEyeConfig, LanePreprocessor, ROICropConfig
@@ -31,7 +31,7 @@ RUN_MODE = "auto"
 LANE_BACKEND = "yolo"
 
 # Camera
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 CAMERA_BACKEND = "dshow"  # Windows: "dshow" 권장. 필요 시 "msmf" 또는 "any".
 CAMERA_WIDTH = 0
 CAMERA_HEIGHT = 0
@@ -47,22 +47,23 @@ DRIVE_MAX_PWM = 255
 USE_LIDAR = False
 LIDAR_PORT = None  # 예: "COM5"
 LIDAR_POLL_EVERY_N_FRAMES = 2
-LIDAR_FRONT_MIN_ANGLE_DEG = 210.0
-LIDAR_FRONT_MAX_ANGLE_DEG = 150.0
+LIDAR_FRONT_MIN_ANGLE_DEG = 87.5
+LIDAR_FRONT_MAX_ANGLE_DEG = 92.5
 LIDAR_STOP_DISTANCE_MM = 450.0
 LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 0.35
 
-# Vision obstacles
-VISION_OBSTACLE_ENABLED = False
-VISION_OBSTACLE_MIN_CONFIDENCE = 0.4
-VISION_OBSTACLE_LANE_CHANGE_AREA_RATIO = 0.0
-VISION_OBSTACLE_AVOIDANCE_STEER_WEIGHT = 15.0
-VISION_OBSTACLE_AVOIDANCE_STEER_LIMIT = 80.0
-VISION_OBSTACLE_LANE_CHANGE_PATH_PROGRESS_STEP = 0.12
-VISION_OBSTACLE_LANE_CHANGE_PATH_LOOKAHEAD_PROGRESS = 0.35
-VISION_OBSTACLE_LANE_CHANGE_COMPLETE_OFFSET_NORM = 0.10
-VISION_OBSTACLE_LANE_CHANGE_COMPLETE_FRAMES = 2
+# contest_ws motion_mission obstacle behavior.  The raw-angle zero setting is
+# the RPLidar measurement that points along ROS/vehicle 0 degrees (forward).
+OBSTACLE_MISSION_ENABLED = True
+LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG = 180.0
+OBSTACLE_DISTANCE_MM = 1000.0
+OBSTACLE_LANE2_DETECTION_FRAMES = 5
+OBSTACLE_LANE1_DETECTION_FRAMES = 3
+OBSTACLE_CLEAR_FRAMES = 3
+OBSTACLE_SMALL_AREA = 5000.0
+OBSTACLE_MEDIUM_AREA = 12000.0
+OBSTACLE_LARGE_AREA = 15000.0
 
 # Traffic light stop gating. Stop only when red/yellow bbox area reaches this frame-area ratio.
 TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.058
@@ -176,6 +177,18 @@ def read_console_key() -> int:
         msvcrt.getwch()
         return -1
     return ord(key)
+
+
+def apply_obstacle_mission_override(
+    base_command: DriveCommand,
+    mission_command: DriveCommand | None,
+    safety: SafetyDecision,
+) -> DriveCommand:
+    if mission_command is None:
+        return base_command
+    if safety.reason == "traffic_light_stop":
+        return base_command
+    return mission_command
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -344,18 +357,21 @@ def main() -> None:
     )
     lidar = LidarReader(lidar_config) if USE_LIDAR else None
     last_obstacle = ObstacleDecision.clear() if USE_LIDAR else None
-    vision_obstacle_config = VisionObstacleConfig(
-        enabled=VISION_OBSTACLE_ENABLED,
-        min_confidence=VISION_OBSTACLE_MIN_CONFIDENCE,
-        lane_change_area_ratio=VISION_OBSTACLE_LANE_CHANGE_AREA_RATIO,
-        avoidance_steer_weight=VISION_OBSTACLE_AVOIDANCE_STEER_WEIGHT,
-        avoidance_steer_limit=VISION_OBSTACLE_AVOIDANCE_STEER_LIMIT,
-        lane_change_path_progress_step=VISION_OBSTACLE_LANE_CHANGE_PATH_PROGRESS_STEP,
-        lane_change_path_lookahead_progress=VISION_OBSTACLE_LANE_CHANGE_PATH_LOOKAHEAD_PROGRESS,
-        lane_change_complete_offset_norm=VISION_OBSTACLE_LANE_CHANGE_COMPLETE_OFFSET_NORM,
-        lane_change_complete_frames=VISION_OBSTACLE_LANE_CHANGE_COMPLETE_FRAMES,
+    last_lidar_scan = None
+    obstacle_mission = ContestObstacleMission(
+        ContestObstacleMissionConfig(
+            enabled=OBSTACLE_MISSION_ENABLED,
+            raw_angle_for_ros_zero_deg=LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG,
+            lidar_obstacle_distance_mm=OBSTACLE_DISTANCE_MM,
+            lane2_obstacle_frames=OBSTACLE_LANE2_DETECTION_FRAMES,
+            lane1_obstacle_frames=OBSTACLE_LANE1_DETECTION_FRAMES,
+            lane1_clear_frames=OBSTACLE_CLEAR_FRAMES,
+            small_area_threshold=OBSTACLE_SMALL_AREA,
+            medium_area_threshold=OBSTACLE_MEDIUM_AREA,
+            large_area_threshold=OBSTACLE_LARGE_AREA,
+            drive_steering_limit=MAX_STEER,
+        )
     )
-    lane_change_state = LaneChangeState()
     logger = DriveLogger(
         LogConfig(
             enabled=(LOG_ENABLED or args.log) and not args.no_log,
@@ -396,21 +412,17 @@ def main() -> None:
 
             if lidar is not None and frame_count % max(LIDAR_POLL_EVERY_N_FRAMES, 1) == 0:
                 try:
-                    last_obstacle = analyze_obstacles(lidar.read_scan(), lidar_config)
+                    last_lidar_scan = lidar.read_scan()
+                    last_obstacle = analyze_obstacles(last_lidar_scan, lidar_config)
                 except Exception as exc:  # pragma: no cover - hardware dependent
                     print(f"LiDAR read failed: {exc}")
+                    last_lidar_scan = None
                     last_obstacle = ObstacleDecision.clear()
 
             if args.mode == "manual" and time.time() > manual_steer_until:
                 manual_steer = 0
 
-            vision_obstacle = analyze_vision_obstacles(lane, vision_obstacle_config)
-            lane_for_control, vision_obstacle = apply_lane_change_for_obstacle(
-                lane,
-                vision_obstacle,
-                vision_obstacle_config,
-                lane_change_state,
-            )
+            lane_for_control = lane
             traffic_obj = traffic_light_object(lane_for_control.objects)
             frame_area = float(max(lane_for_control.annotated.shape[0] * lane_for_control.annotated.shape[1], 1))
             safety = build_safety_decision(
@@ -419,16 +431,27 @@ def main() -> None:
                 traffic_light_object=traffic_obj,
                 traffic_light_frame_area=frame_area,
                 traffic_light_min_stop_area_ratio=TRAFFIC_LIGHT_STOP_AREA_RATIO,
-                vision_obstacle_decision=vision_obstacle,
             )
             if drive_started:
-                command = controller.compute(
+                base_command = controller.compute(
                     lane_for_control,
                     safety,
                     args.mode,
                     manual_steer=manual_steer,
                     manual_speed=manual_speed,
                 )
+                mission_command = None
+                if args.mode == "auto":
+                    vehicle_position_x = -lane.offset_px if lane.offset_px is not None else None
+                    mission_command = obstacle_mission.step(
+                        objects=lane.objects,
+                        current_lane=lane.lane_label,
+                        heading_deg=lane.heading_deg,
+                        vehicle_position_x=vehicle_position_x,
+                        frame_width=lane.annotated.shape[1],
+                        lidar_scan=last_lidar_scan,
+                    )
+                command = apply_obstacle_mission_override(base_command, mission_command, safety)
             else:
                 command = DriveCommand(steer=0, speed=0, reason="waiting_for_start")
             motor.send(command.steer, command.speed if motor_enabled else 0)
