@@ -83,10 +83,21 @@ class ContestObstacleMissionConfig:
     lane2_shift_steer: int = -60
     lane1_shift_steer: int = 60
     shift_out_duration_s: float = 0.70
-    pass_steer: int = 0
-    pass_duration_s: float = 0.50
+    # The shift-out phase runs longer when the car is already steered hard at
+    # detection: duration = shift_out_duration_s + |steer_at_detection| * weight.
+    shift_out_steer_weight: float = 0.0
+    # Pass phase counter-steers opposite the shift (per lane) until the car's
+    # heading matches the new lane's centerline, instead of driving straight or
+    # counter-steering for a fixed time.  Defaults are the negatives of the
+    # shift steers.
+    lane2_pass_steer: int = 60
+    lane1_pass_steer: int = -60
+    # Counter-steer ends when |heading of the new lane| <= this many degrees
+    # (car aligned with the new lane centerline).  pass_max_duration_s is a
+    # safety cap so a lost lane never leaves the car counter-steering forever.
+    pass_align_heading_deg: float = 5.0
+    pass_max_duration_s: float = 2.0
     retrigger_cooldown_s: float = 1.0
-    drive_steering_limit: int = 80
 
 @dataclass(frozen=True)
 class ContestCarObservation:
@@ -124,7 +135,10 @@ class ContestObstacleMission:
         self.current_lane: int | None = None
         self.avoidance_source_lane: int | None = None
         self.active_shift_steer = 0
+        self.active_shift_out_duration_s = float(self.config.shift_out_duration_s)
         self.latest_lidar_range_mm: float | None = None
+        self.latest_heading_deg: float | None = None
+        self.latest_lane_follow_steer = 0
         self.last_car = ContestCarObservation(False, 0.0, None)
         self.trigger_counter = 0
         self.phase_started_s = 0.0
@@ -150,6 +164,8 @@ class ContestObstacleMission:
         current_lane: int | str | None,
         frame_width: int,
         lidar_scan: np.ndarray | None,
+        heading_deg: float | None = None,
+        lane_follow_steer: int = 0,
         cruise_speed: int | None = None,
         now_s: float | None = None,
     ) -> DriveCommand | None:
@@ -157,6 +173,8 @@ class ContestObstacleMission:
         observed_lane = _contest_lane_number(current_lane)
         if observed_lane is not None:
             self.current_lane = observed_lane
+        self.latest_heading_deg = heading_deg
+        self.latest_lane_follow_steer = int(lane_follow_steer)
         self.latest_lidar_range_mm = self._lidar_range(lidar_scan)
         self.last_car = detect_contest_car(objects, frame_width, self.config.camera_min_confidence)
         if cruise_speed is not None:
@@ -181,13 +199,25 @@ class ContestObstacleMission:
             self.trigger_counter = 0
             return None
 
-        if self.current_lane in (1, 2) and self.last_car.detected and self._lidar_is_near():
+        if self._obstacle_present():
             self.trigger_counter += 1
         else:
             self.trigger_counter = 0
         if self.trigger_counter < max(1, self.config.trigger_frames):
             return None
+        return self._begin_shift_out(now_s)
 
+    def _obstacle_present(self) -> bool:
+        # A car in the central camera region with a near LiDAR return straight
+        # ahead, in a known lane.  This is the trigger condition without the
+        # consecutive-frame counter.
+        return (
+            self.current_lane in (1, 2)
+            and self.last_car.detected
+            and self._lidar_is_near()
+        )
+
+    def _begin_shift_out(self, now_s: float) -> DriveCommand:
         self.trigger_counter = 0
         self.phase = ContestObstaclePhase.AVOID_SHIFT_OUT
         self.phase_started_s = now_s
@@ -197,26 +227,71 @@ class ContestObstacleMission:
             if self.avoidance_source_lane == 2
             else self.config.lane1_shift_steer
         )
+        # Extend the shift-out time when the car is already steered hard at
+        # detection (e.g. mid-curve), so the maneuver still clears the lane.
+        self.active_shift_out_duration_s = max(
+            0.0,
+            self.config.shift_out_duration_s
+            + abs(self.latest_lane_follow_steer) * self.config.shift_out_steer_weight,
+        )
         return self._command(self.active_shift_steer, "obstacle_avoid_shift_out")
 
     def _avoidance_command(self, now_s: float) -> DriveCommand | None:
         if self.phase == ContestObstaclePhase.AVOID_SHIFT_OUT:
-            duration = max(0.0, self.config.shift_out_duration_s)
+            duration = max(0.0, self.active_shift_out_duration_s)
             if now_s - self.phase_started_s < duration:
                 return self._command(self.active_shift_steer, "obstacle_avoid_shift_out")
             self.phase = ContestObstaclePhase.AVOID_PASS
             self.phase_started_s += duration
 
         if self.phase == ContestObstaclePhase.AVOID_PASS:
-            duration = max(0.0, self.config.pass_duration_s)
-            if now_s - self.phase_started_s < duration:
-                return self._command(self.config.pass_steer, "obstacle_avoid_pass")
-            self._finish_avoidance(now_s)
+            timed_out = now_s - self.phase_started_s >= max(0.0, self.config.pass_max_duration_s)
+            if not (self._heading_aligned_with_target_lane() or timed_out):
+                return self._command(self._pass_steer(), "obstacle_avoid_pass")
+            return self._finish_or_rechain(now_s)
         return None
 
+    def _finish_or_rechain(self, now_s: float) -> DriveCommand | None:
+        # Obstacle avoidance stays top priority.  If another obstacle is still
+        # ahead when the pass completes, chain straight into a fresh shift-out
+        # from the lane we just entered instead of handing even one frame back
+        # to the lane follower, which would jerk the wheel toward the lane
+        # center before the next avoidance re-triggers.
+        if self._obstacle_present():
+            return self._begin_shift_out(now_s)
+        self._finish_avoidance(now_s)
+        return None
+
+    def _pass_steer(self) -> int:
+        # Counter-steer opposite the shift, selected by the lane the maneuver
+        # started from (locked in avoidance_source_lane, not the live detection).
+        return (
+            self.config.lane2_pass_steer
+            if self.avoidance_source_lane == 2
+            else self.config.lane1_pass_steer
+        )
+
+    def _target_lane(self) -> int | None:
+        # The lane we are shifting into: the opposite of the source lane.
+        if self.avoidance_source_lane == 2:
+            return 1
+        if self.avoidance_source_lane == 1:
+            return 2
+        return None
+
+    def _heading_aligned_with_target_lane(self) -> bool:
+        # Counter-steering ends once vision reports we are in the target lane and
+        # the followed lane's heading is within the threshold of straight ahead,
+        # i.e. the car's heading matches the new lane's centerline.
+        if self.current_lane != self._target_lane():
+            return False
+        if self.latest_heading_deg is None:
+            return False
+        return abs(self.latest_heading_deg) <= abs(self.config.pass_align_heading_deg)
+
     def _finish_avoidance(self, now_s: float) -> None:
-        # There is intentionally no steering phase back to the source lane.
-        # Normal control resumes on the closest lane area after the pass.
+        # After the counter-steer pass phase there is no further steering back to
+        # the source lane; normal control resumes on the closest lane area.
         self.phase = ContestObstaclePhase.LANE_FOLLOW
         self.trigger_counter = 0
         self.avoidance_source_lane = None
@@ -230,8 +305,12 @@ class ContestObstacleMission:
         )
 
     def _command(self, steering: int, reason: str) -> DriveCommand:
+        # Avoidance steering intentionally bypasses the lane-follow MAX_STEER
+        # limit and follows the tuned shift/pass values exactly.  The only cap
+        # applied downstream is the Arduino protocol limit (+/-100) in
+        # ArduinoMotorController.send.
         return DriveCommand(
-            steer=int(clamp(steering, -abs(self.config.drive_steering_limit), abs(self.config.drive_steering_limit))),
+            steer=int(steering),
             speed=self.cruise_speed,
             reason=reason,
         )

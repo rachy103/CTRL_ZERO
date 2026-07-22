@@ -31,7 +31,7 @@ RUN_MODE = "auto"
 LANE_BACKEND = "yolo"
 
 # Camera
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 CAMERA_BACKEND = "dshow"  # Windows: "dshow" 권장. 필요 시 "msmf" 또는 "any".
 CAMERA_WIDTH = 0
 CAMERA_HEIGHT = 0
@@ -39,16 +39,16 @@ CAMERA_FPS = 0
 
 # Arduino / motor
 USE_ARDUINO = True
-ARDUINO_PORT = "COM6"
+ARDUINO_PORT = "COM3"
 ARDUINO_BAUDRATE = 9600
 DRIVE_MAX_PWM = 255
 
 # LiDAR
 USE_LIDAR = True
-LIDAR_PORT = "COM3"
+LIDAR_PORT = "COM4"
 LIDAR_POLL_EVERY_N_FRAMES = 2
-LIDAR_FRONT_MIN_ANGLE_DEG = 177.5
-LIDAR_FRONT_MAX_ANGLE_DEG = 182.5
+LIDAR_FRONT_MIN_ANGLE_DEG = 100
+LIDAR_FRONT_MAX_ANGLE_DEG = 225
 LIDAR_STOP_DISTANCE_MM = 450.0
 LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 1.0
@@ -61,12 +61,20 @@ LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG = 180.0
 OBSTACLE_DISTANCE_MM = 3000.0
 OBSTACLE_TRIGGER_FRAMES = 5
 
-OBSTACLE_LANE2_SHIFT_STEER = -80
-OBSTACLE_LANE1_SHIFT_STEER = 80
-OBSTACLE_SHIFT_OUT_SECONDS = 1.0
-OBSTACLE_PASS_STEER = 0
-OBSTACLE_PASS_SECONDS = 0.50
-OBSTACLE_RETRIGGER_COOLDOWN_SECONDS = 0.5
+OBSTACLE_LANE2_SHIFT_STEER = -100
+OBSTACLE_LANE1_SHIFT_STEER = 100
+OBSTACLE_SHIFT_OUT_SECONDS = 1.65
+# Extra shift-out time per unit of steering at detection (seconds per steer unit).
+# duration = OBSTACLE_SHIFT_OUT_SECONDS + |steer_at_detection| * this. 0 disables.
+OBSTACLE_SHIFT_OUT_STEER_WEIGHT = 0.0
+# Pass phase counter-steers opposite the shift, per lane, until the car's
+# heading matches the new lane's centerline (within OBSTACLE_PASS_ALIGN_HEADING_DEG).
+# OBSTACLE_PASS_MAX_SECONDS is a safety cap if the lane is never re-acquired.
+OBSTACLE_LANE2_PASS_STEER = 100
+OBSTACLE_LANE1_PASS_STEER = -100
+OBSTACLE_PASS_ALIGN_HEADING_DEG = 5.0
+OBSTACLE_PASS_MAX_SECONDS = 1.65
+OBSTACLE_RETRIGGER_COOLDOWN_SECONDS = 0.0
 
 # Traffic light stop gating. Stop only when red/yellow bbox area reaches this frame-area ratio.
 TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.058
@@ -371,10 +379,12 @@ def main() -> None:
             lane2_shift_steer=OBSTACLE_LANE2_SHIFT_STEER,
             lane1_shift_steer=OBSTACLE_LANE1_SHIFT_STEER,
             shift_out_duration_s=OBSTACLE_SHIFT_OUT_SECONDS,
-            pass_steer=OBSTACLE_PASS_STEER,
-            pass_duration_s=OBSTACLE_PASS_SECONDS,
+            shift_out_steer_weight=OBSTACLE_SHIFT_OUT_STEER_WEIGHT,
+            lane2_pass_steer=OBSTACLE_LANE2_PASS_STEER,
+            lane1_pass_steer=OBSTACLE_LANE1_PASS_STEER,
+            pass_align_heading_deg=OBSTACLE_PASS_ALIGN_HEADING_DEG,
+            pass_max_duration_s=OBSTACLE_PASS_MAX_SECONDS,
             retrigger_cooldown_s=OBSTACLE_RETRIGGER_COOLDOWN_SECONDS,
-            drive_steering_limit=MAX_STEER,
         )
     )
     logger = DriveLogger(
@@ -400,8 +410,8 @@ def main() -> None:
             lidar.open()
         logger.open()
 
-        print("Keys: q quit, d start/resume, space stop/wait, +/- max speed, l toggle log.")
-        print("Manual mode keys after start: w/s speed, a/d steer pulse, c center steer.")
+        print("Keys: q quit, d start/resume, space stop + manual, +/- max speed, l toggle log.")
+        print("Manual driving (space or --mode manual): w/s speed, a/d steer pulse, c center steer.")
         print(f"Runtime: mode={args.mode}, backend={args.backend}, motor={'on' if motor_enabled else 'dry'}")
         if motor_enabled:
             print("Drive is waiting. Press d/D to start motor output.")
@@ -452,6 +462,8 @@ def main() -> None:
                         current_lane=lane.lane_label or lane.lane_pair_label,
                         frame_width=lane.annotated.shape[1],
                         lidar_scan=last_lidar_scan,
+                        heading_deg=lane.heading_deg,
+                        lane_follow_steer=base_command.steer,
                         cruise_speed=controller.config.max_speed,
                     )
                 command = apply_obstacle_mission_override(base_command, mission_command, safety)
@@ -488,14 +500,14 @@ def main() -> None:
                 break
             started_this_frame = False
             if key == ord(" "):
+                # Space: stop immediately and hand control to manual WASD driving.
+                # Drive stays armed so w/s/a/d work at once (speed starts at 0).
+                args.mode = "manual"
                 manual_speed = 0
                 manual_steer = 0
                 manual_steer_until = 0.0
-                if motor_enabled:
-                    drive_started = False
                 motor.stop()
-                if motor_enabled:
-                    print("Drive paused. Press d/D to start motor output.")
+                print("Stopped. MANUAL mode: w/s speed, a/d steer, c center.")
             elif motor_enabled and not drive_started and is_start_key(key):
                 drive_started = True
                 started_this_frame = True
