@@ -24,11 +24,14 @@ def test_angle_range_wraps_across_zero_degrees():
     assert len(front) == 2
 
 
-def test_obstacle_slow_zone_scales_speed():
-    scan = np.array([[90.0, 700.0], [180.0, 200.0]], dtype=np.float32)
-    decision = analyze_obstacles(scan, LidarConfig(stop_distance_mm=450.0, slow_distance_mm=900.0))
+def test_obstacle_never_stops_or_slows():
+    # Stop and slowdown are removed: even a very close obstacle leaves speed at
+    # full scale, while still reporting the measured distance.
+    scan = np.array([[90.0, 100.0], [180.0, 200.0]], dtype=np.float32)
+    decision = analyze_obstacles(scan, LidarConfig())
     assert not decision.should_stop
-    assert 0.0 < decision.speed_scale < 1.0
+    assert decision.speed_scale == 1.0
+    assert decision.nearest_front_mm == 100.0
 
 
 def test_ros_sector_conversion_matches_original_rplidar_driver_orientation():

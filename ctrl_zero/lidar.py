@@ -6,8 +6,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ctrl_zero.common import clamp
-
 
 @dataclass
 class LidarConfig:
@@ -18,9 +16,11 @@ class LidarConfig:
     min_distance_mm: float = 0.0
     front_min_angle_deg: float = 87.5
     front_max_angle_deg: float = 92.5
+    # Unused: front-LiDAR stop and slowdown were removed, so these no longer
+    # affect speed.  Kept only so existing configs/tests keep constructing.
     stop_distance_mm: float = 450.0
     slow_distance_mm: float = 900.0
-    min_speed_scale: float = 0.35
+    min_speed_scale: float = 1.0
     rpm: int | None = None
     reconnect_delay_s: float = 1.0
     stale_scan_seconds: float = 1.0
@@ -417,17 +417,13 @@ def analyze_obstacles(scan: np.ndarray | None, config: LidarConfig) -> ObstacleD
         return ObstacleDecision.clear()
 
     nearest = float(np.min(front[:, 1]))
-    if nearest <= config.stop_distance_mm:
-        return ObstacleDecision(nearest_front_mm=nearest, speed_scale=0.0, should_stop=True, front_points=len(front))
-    if nearest >= config.slow_distance_mm:
-        return ObstacleDecision(nearest_front_mm=nearest, speed_scale=1.0, should_stop=False, front_points=len(front))
-
-    span = max(config.slow_distance_mm - config.stop_distance_mm, 1.0)
-    ratio = (nearest - config.stop_distance_mm) / span
-    speed_scale = config.min_speed_scale + ratio * (1.0 - config.min_speed_scale)
+    # LiDAR stopping AND slowdown are both intentionally removed: obstacles are
+    # handled by the lane-change mission, so the front LiDAR never alters speed.
+    # The measured distance is still reported for logging/UI, but the car always
+    # runs at full speed (speed_scale=1.0, should_stop=False).
     return ObstacleDecision(
         nearest_front_mm=nearest,
-        speed_scale=float(clamp(speed_scale, config.min_speed_scale, 1.0)),
+        speed_scale=1.0,
         should_stop=False,
         front_points=len(front),
     )
