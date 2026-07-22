@@ -10,7 +10,7 @@ import numpy as np
 
 from ctrl_zero.common import clamp
 from ctrl_zero.control import DriveCommand
-from ctrl_zero.lidar import average_distance_mm_in_ros_sector
+from ctrl_zero.lidar import min_distance_mm_in_ros_sector
 from ctrl_zero.perception import DetectedObject, compact_class_name
 from ctrl_zero.safety import SafetyDecision
 from ctrl_zero.vision.base import LaneDetection
@@ -78,10 +78,14 @@ class ContestObstacleMissionConfig:
     enabled: bool = True
     camera_min_confidence: float = 0.50
     lidar_obstacle_distance_mm: float = 1000.0
-    lane2_lidar_min_ros_deg: float = 87.5
-    lane2_lidar_max_ros_deg: float = 92.5
-    lane1_lidar_min_ros_deg: float = -93.0
-    lane1_lidar_max_ros_deg: float = -90.0
+    # The obstacle to avoid is a car directly ahead, so both monitoring phases
+    # watch the forward cone (ROS 0 = raw 180 on this vehicle, confirmed with
+    # lidar_probe.py).  The original contest values (ROS +/-90) watched the
+    # sides because that robot's LiDAR was mounted with forward at ROS +90.
+    lane2_lidar_min_ros_deg: float = -10.0
+    lane2_lidar_max_ros_deg: float = 10.0
+    lane1_lidar_min_ros_deg: float = -10.0
+    lane1_lidar_max_ros_deg: float = 10.0
     raw_angle_for_ros_zero_deg: float = 180.0
     lane2_obstacle_frames: int = 5
     lane1_obstacle_frames: int = 3
@@ -154,7 +158,7 @@ class ContestObstacleMission:
         self.phase = ContestObstaclePhase.MONITOR_LANE2
         self.current_lane: int | None = None
         self.target_lane = 2
-        self.latest_lidar_avg_mm: float | None = None
+        self.latest_lidar_range_mm: float | None = None
         self.last_car = ContestCarObservation(False, 0.0, None)
         self.lidar_lane_change_counter = 0
         self.lidar_lane_change_executed = False
@@ -189,7 +193,7 @@ class ContestObstacleMission:
         lidar_scan: np.ndarray | None,
     ) -> DriveCommand | None:
         self.current_lane = _contest_lane_number(current_lane)
-        self.latest_lidar_avg_mm = self._lidar_average(lidar_scan)
+        self.latest_lidar_range_mm = self._lidar_range(lidar_scan)
         self.last_car = detect_contest_car(objects, frame_width, self.config.camera_min_confidence)
 
         if not self.config.enabled or self.phase == ContestObstaclePhase.COMPLETE:
@@ -208,7 +212,7 @@ class ContestObstacleMission:
             return self._stabilize(2, heading_deg, vehicle_position_x)
         return None
 
-    def _lidar_average(self, scan: np.ndarray | None) -> float | None:
+    def _lidar_range(self, scan: np.ndarray | None) -> float | None:
         if self.current_lane == 2:
             start = self.config.lane2_lidar_min_ros_deg
             end = self.config.lane2_lidar_max_ros_deg
@@ -216,7 +220,10 @@ class ContestObstacleMission:
             # This is also the source fallback when lane information is absent.
             start = self.config.lane1_lidar_min_ros_deg
             end = self.config.lane1_lidar_max_ros_deg
-        return average_distance_mm_in_ros_sector(
+        # Use the nearest return in the cone, not the mean: a single close car
+        # flanked by far background must trip the threshold, which a sector
+        # average would wash out.
+        return min_distance_mm_in_ros_sector(
             scan,
             start,
             end,
@@ -318,8 +325,8 @@ class ContestObstacleMission:
             self.lidar_obstacle_counter = 0
 
         lidar_is_clear = (
-            self.latest_lidar_avg_mm is not None
-            and self.latest_lidar_avg_mm > self.config.lidar_obstacle_distance_mm
+            self.latest_lidar_range_mm is not None
+            and self.latest_lidar_range_mm > self.config.lidar_obstacle_distance_mm
         )
         if self.obstacle_flag and forward_motion and lidar_is_clear:
             self.no_obstacle_counter += 1
@@ -335,8 +342,8 @@ class ContestObstacleMission:
 
     def _lidar_is_near(self) -> bool:
         return (
-            self.latest_lidar_avg_mm is not None
-            and self.latest_lidar_avg_mm < self.config.lidar_obstacle_distance_mm
+            self.latest_lidar_range_mm is not None
+            and self.latest_lidar_range_mm < self.config.lidar_obstacle_distance_mm
         )
 
     def _lane_change_command(self, target_lane: int) -> DriveCommand:
@@ -384,6 +391,24 @@ def _contest_lane_number(value: int | str | None) -> int | None:
         return 1
     if normalized in {"2", "lane2"}:
         return 2
+    # Composite labels such as "lane2 target=lane1" or
+    # "mode=lane_area target=lane2 points=…" carry the driving lane in a
+    # token; a plain equality check on the whole string misses it and the
+    # mission stays inert.  Prefer an explicit target=laneN token, then a
+    # bare laneN token.
+    tokens = normalized.split()
+    for token in tokens:
+        if token.startswith("target="):
+            parsed = _contest_lane_number(token.split("=", 1)[1])
+            if parsed is not None:
+                return parsed
+    # Bare digits inside a composite label (candidate indexes, counts) are
+    # not lane numbers, so only accept explicit laneN tokens here.
+    for token in tokens:
+        if token == "lane1":
+            return 1
+        if token == "lane2":
+            return 2
     return None
 
 

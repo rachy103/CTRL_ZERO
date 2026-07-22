@@ -32,13 +32,14 @@ def car_with_area(area: float, center_x: float = 320.0) -> DetectedObject:
 
 
 def lane2_scan(distance_mm: float) -> np.ndarray:
-    # ROS +90 degrees maps to raw +90 with source raw-zero=180.
-    return np.array([[90.0, distance_mm], [271.5, 3000.0]], dtype=np.float32)
+    # The obstacle is a car directly ahead: forward is raw 180 = ROS 0 on this
+    # vehicle, with far background off to the side.
+    return np.array([[180.0, distance_mm], [90.0, 3000.0]], dtype=np.float32)
 
 
 def lane1_scan(distance_mm: float) -> np.ndarray:
-    # ROS -91.5 degrees maps to raw +271.5 with source raw-zero=180.
-    return np.array([[90.0, 3000.0], [271.5, distance_mm]], dtype=np.float32)
+    # Lane 1 monitoring also watches the forward cone (raw 180 = ROS 0).
+    return np.array([[180.0, distance_mm], [90.0, 3000.0]], dtype=np.float32)
 
 
 def step(

@@ -3,10 +3,17 @@ from __future__ import annotations
 import numpy as np
 
 from ctrl_zero.lidar import (
+    FORWARD_RAW_ANGLE_DEG,
+    LEFT_RAW_ANGLE_DEG,
+    RIGHT_RAW_ANGLE_DEG,
     LidarConfig,
     analyze_obstacles,
     angle_range,
     average_distance_mm_in_ros_sector,
+    direction_min_distance_mm,
+    min_distance_mm_in_ros_sector,
+    nearest_obstacle,
+    raw_to_ros_angle_deg,
     ros_angle_range,
 )
 
@@ -47,3 +54,36 @@ def test_ros_sector_average_rejects_zero_and_infinite_ranges_like_source():
     scan = np.array([[90.0, 0.0], [91.0, np.inf], [92.0, 750.0]], dtype=np.float32)
 
     assert average_distance_mm_in_ros_sector(scan, 87.5, 92.5) == 750.0
+
+
+def test_vehicle_direction_convention_maps_to_ros():
+    # Confirmed on the car: forward=raw 180, left=raw 90, right=raw 270.
+    assert raw_to_ros_angle_deg(FORWARD_RAW_ANGLE_DEG) == 0.0
+    assert raw_to_ros_angle_deg(LEFT_RAW_ANGLE_DEG) == 90.0
+    assert raw_to_ros_angle_deg(RIGHT_RAW_ANGLE_DEG) == -90.0
+
+
+def test_nearest_obstacle_reports_closest_valid_point():
+    scan = np.array([[180.0, 5000.0], [90.0, 500.0], [270.0, 0.0]], dtype=np.float32)
+    nearest = nearest_obstacle(scan)
+    assert nearest is not None
+    assert nearest.raw_angle_deg == 90.0
+    assert nearest.ros_angle_deg == 90.0  # left
+    assert nearest.distance_mm == 500.0
+
+
+def test_nearest_obstacle_honours_max_range_and_empty_scan():
+    scan = np.array([[180.0, 5000.0]], dtype=np.float32)
+    assert nearest_obstacle(scan, max_range_mm=1000.0) is None
+    assert nearest_obstacle(None) is None
+
+
+def test_direction_min_distance_selects_forward_sector():
+    scan = np.array([[178.0, 600.0], [182.0, 400.0], [90.0, 100.0]], dtype=np.float32)
+    # Forward sector ignores the near point at raw 90 (left).
+    assert direction_min_distance_mm(scan, FORWARD_RAW_ANGLE_DEG, 15.0) == 400.0
+
+
+def test_min_distance_in_ros_sector_uses_minimum_not_mean():
+    scan = np.array([[180.0, 400.0], [180.5, 5000.0]], dtype=np.float32)  # ROS ~0 (forward)
+    assert min_distance_mm_in_ros_sector(scan, -2.5, 2.5) == 400.0

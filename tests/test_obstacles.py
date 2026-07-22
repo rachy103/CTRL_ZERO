@@ -4,7 +4,15 @@ import numpy as np
 import pytest
 
 from ctrl_zero.lidar import ObstacleDecision
-from ctrl_zero.obstacles import LaneChangeState, VisionObstacleConfig, analyze_vision_obstacles, apply_lane_change_for_obstacle
+from ctrl_zero.obstacles import (
+    ContestObstacleMission,
+    ContestObstacleMissionConfig,
+    ContestObstaclePhase,
+    LaneChangeState,
+    VisionObstacleConfig,
+    analyze_vision_obstacles,
+    apply_lane_change_for_obstacle,
+)
 from ctrl_zero.perception import BoundingBox, DetectedObject
 from ctrl_zero.safety import SafetyDecision, build_safety_decision
 from ctrl_zero.vision.base import LaneDetection, LaneReference
@@ -86,6 +94,71 @@ def test_lidar_slow_still_applies_when_vision_obstacle_is_detected():
     assert fused.reason == "lidar_slow"
     assert fused.nearest_front_mm == 700.0
     assert fused.vision_obstacle is not None
+
+
+def _forward_scan(distance_mm: float) -> np.ndarray:
+    # A single return straight ahead (raw 180 = ROS 0 on this vehicle).
+    return np.array([[180.0, distance_mm]], dtype=np.float32)
+
+
+def test_mission_triggers_lane_change_on_forward_lidar_obstacle():
+    config = ContestObstacleMissionConfig()
+    mission = ContestObstacleMission(config)
+
+    # A car ahead within the obstacle distance should trip after the required
+    # number of consecutive frames, then change toward lane 1.
+    command = None
+    for _ in range(config.lane2_obstacle_frames):
+        assert mission.phase == ContestObstaclePhase.MONITOR_LANE2
+        command = mission.step(
+            objects=[],
+            current_lane="lane2",
+            heading_deg=0.0,
+            vehicle_position_x=0.0,
+            frame_width=640,
+            lidar_scan=_forward_scan(500.0),
+        )
+
+    assert mission.phase == ContestObstaclePhase.CHANGE_TO_LANE1
+    assert command is not None
+    assert command.reason == "obstacle_lane_change_2_to_1"
+
+
+def test_mission_does_not_trigger_when_forward_is_clear():
+    config = ContestObstacleMissionConfig()
+    mission = ContestObstacleMission(config)
+
+    for _ in range(config.lane2_obstacle_frames + 3):
+        mission.step(
+            objects=[],
+            current_lane="lane2",
+            heading_deg=0.0,
+            vehicle_position_x=0.0,
+            frame_width=640,
+            lidar_scan=_forward_scan(config.lidar_obstacle_distance_mm + 500.0),
+        )
+
+    assert mission.phase == ContestObstaclePhase.MONITOR_LANE2
+
+
+def test_mission_side_obstacle_no_longer_triggers():
+    # A return only to the left (raw 90) must NOT trigger now that the mission
+    # watches the forward cone.
+    config = ContestObstacleMissionConfig()
+    mission = ContestObstacleMission(config)
+    left_scan = np.array([[90.0, 400.0]], dtype=np.float32)
+
+    for _ in range(config.lane2_obstacle_frames + 3):
+        mission.step(
+            objects=[],
+            current_lane="lane2",
+            heading_deg=0.0,
+            vehicle_position_x=0.0,
+            frame_width=640,
+            lidar_scan=left_scan,
+        )
+
+    assert mission.phase == ContestObstaclePhase.MONITOR_LANE2
 
 
 def test_obstacle_in_other_lane_is_ignored_when_lane_labels_exist():

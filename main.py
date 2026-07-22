@@ -31,7 +31,7 @@ RUN_MODE = "auto"
 LANE_BACKEND = "yolo"
 
 # Camera
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 CAMERA_BACKEND = "dshow"  # Windows: "dshow" 권장. 필요 시 "msmf" 또는 "any".
 CAMERA_WIDTH = 0
 CAMERA_HEIGHT = 0
@@ -39,16 +39,16 @@ CAMERA_FPS = 0
 
 # Arduino / motor
 USE_ARDUINO = True
-ARDUINO_PORT = "auto"
+ARDUINO_PORT = "COM3"
 ARDUINO_BAUDRATE = 9600
 DRIVE_MAX_PWM = 255
 
 # LiDAR
-USE_LIDAR = False
-LIDAR_PORT = None  # 예: "COM5"
+USE_LIDAR = True
+LIDAR_PORT = "COM4"  # 예: "COM5"
 LIDAR_POLL_EVERY_N_FRAMES = 2
-LIDAR_FRONT_MIN_ANGLE_DEG = 87.5
-LIDAR_FRONT_MAX_ANGLE_DEG = 92.5
+LIDAR_FRONT_MIN_ANGLE_DEG = 177.5
+LIDAR_FRONT_MAX_ANGLE_DEG = 182.5
 LIDAR_STOP_DISTANCE_MM = 450.0
 LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 0.35
@@ -445,7 +445,9 @@ def main() -> None:
                     vehicle_position_x = -lane.offset_px if lane.offset_px is not None else None
                     mission_command = obstacle_mission.step(
                         objects=lane.objects,
-                        current_lane=lane.lane_label,
+                        # lane_label is empty in some detector modes; the pair
+                        # label still carries a target=laneN token to parse.
+                        current_lane=lane.lane_label or lane.lane_pair_label,
                         heading_deg=lane.heading_deg,
                         vehicle_position_x=vehicle_position_x,
                         frame_width=lane.annotated.shape[1],
