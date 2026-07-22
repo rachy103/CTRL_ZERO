@@ -53,14 +53,20 @@ LIDAR_STOP_DISTANCE_MM = 450.0
 LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 1.0
 
-# contest_ws motion_mission obstacle behavior.  The raw-angle zero setting is
-# the RPLidar measurement that points along ROS/vehicle 0 degrees (forward).
+# Timed obstacle mode: shift to the opposite lane, pass the obstacle, then
+# hand control back to normal lane following without steering back.
 OBSTACLE_MISSION_ENABLED = True
 LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG = 180.0
+
 OBSTACLE_DISTANCE_MM = 3000.0
-OBSTACLE_LANE2_DETECTION_FRAMES = 5
-OBSTACLE_LANE1_DETECTION_FRAMES = 3
-OBSTACLE_CLEAR_FRAMES = 3
+OBSTACLE_TRIGGER_FRAMES = 5
+
+OBSTACLE_LANE2_SHIFT_STEER = -80
+OBSTACLE_LANE1_SHIFT_STEER = 80
+OBSTACLE_SHIFT_OUT_SECONDS = 1.0
+OBSTACLE_PASS_STEER = 0
+OBSTACLE_PASS_SECONDS = 0.50
+OBSTACLE_RETRIGGER_COOLDOWN_SECONDS = 0.5
 
 # Traffic light stop gating. Stop only when red/yellow bbox area reaches this frame-area ratio.
 TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.058
@@ -360,10 +366,14 @@ def main() -> None:
             enabled=OBSTACLE_MISSION_ENABLED,
             raw_angle_for_ros_zero_deg=LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG,
             lidar_obstacle_distance_mm=OBSTACLE_DISTANCE_MM,
-            lane2_obstacle_frames=OBSTACLE_LANE2_DETECTION_FRAMES,
-            lane1_obstacle_frames=OBSTACLE_LANE1_DETECTION_FRAMES,
-            lane1_clear_frames=OBSTACLE_CLEAR_FRAMES,
+            trigger_frames=OBSTACLE_TRIGGER_FRAMES,
             cruise_speed=MAX_SPEED,
+            lane2_shift_steer=OBSTACLE_LANE2_SHIFT_STEER,
+            lane1_shift_steer=OBSTACLE_LANE1_SHIFT_STEER,
+            shift_out_duration_s=OBSTACLE_SHIFT_OUT_SECONDS,
+            pass_steer=OBSTACLE_PASS_STEER,
+            pass_duration_s=OBSTACLE_PASS_SECONDS,
+            retrigger_cooldown_s=OBSTACLE_RETRIGGER_COOLDOWN_SECONDS,
             drive_steering_limit=MAX_STEER,
         )
     )
@@ -437,14 +447,9 @@ def main() -> None:
                 )
                 mission_command = None
                 if args.mode == "auto":
-                    vehicle_position_x = -lane.offset_px if lane.offset_px is not None else None
                     mission_command = obstacle_mission.step(
                         objects=lane.objects,
-                        # lane_label is empty in some detector modes; the pair
-                        # label still carries a target=laneN token to parse.
                         current_lane=lane.lane_label or lane.lane_pair_label,
-                        heading_deg=lane.heading_deg,
-                        vehicle_position_x=vehicle_position_x,
                         frame_width=lane.annotated.shape[1],
                         lidar_scan=last_lidar_scan,
                         cruise_speed=controller.config.max_speed,

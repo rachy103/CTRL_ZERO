@@ -44,9 +44,6 @@ def reuse_detection_on_frame(frame, previous: LaneDetection, confidence_scale: f
             2,
         )
         cv2.circle(annotated, (int(previous.lane_center_near_x), near_y), 6, (255, 255, 0), -1)
-    cv2.putText(annotated, "cached lane", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
-    cv2.putText(annotated, "cached lane", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-
     return LaneDetection(
         lanes=previous.lanes,
         left_fit=previous.left_fit,

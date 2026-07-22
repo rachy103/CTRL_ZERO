@@ -47,5 +47,4 @@ def draw_status(
     y = 24
     for text in lines:
         cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 1, cv2.LINE_AA)
         y += 24

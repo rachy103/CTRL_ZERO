@@ -101,27 +101,26 @@ def _forward_scan(distance_mm: float) -> np.ndarray:
     return np.array([[180.0, distance_mm]], dtype=np.float32)
 
 
-def test_mission_triggers_lane_change_on_forward_lidar_obstacle():
+def test_mission_triggers_avoidance_on_camera_and_forward_lidar_obstacle():
     config = ContestObstacleMissionConfig()
     mission = ContestObstacleMission(config)
 
     # Camera and LiDAR must agree that a car is ahead for the required number
     # of consecutive frames before changing toward lane 1.
     command = None
-    for _ in range(config.lane2_obstacle_frames):
-        assert mission.phase == ContestObstaclePhase.MONITOR_LANE2
+    for frame in range(config.trigger_frames):
+        assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
         command = mission.step(
             objects=[obj("car", BoundingBox(280, 100, 360, 180))],
             current_lane="lane2",
-            heading_deg=0.0,
-            vehicle_position_x=0.0,
             frame_width=640,
             lidar_scan=_forward_scan(500.0),
+            now_s=frame * 0.1,
         )
 
-    assert mission.phase == ContestObstaclePhase.CHANGE_TO_LANE1
+    assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
     assert command is not None
-    assert command.reason == "obstacle_lane_change_2_to_1"
+    assert command.reason == "obstacle_avoid_shift_out"
 
 
 def test_mission_does_not_trigger_from_only_one_sensor():
@@ -130,43 +129,40 @@ def test_mission_does_not_trigger_from_only_one_sensor():
 
     lidar_only = ContestObstacleMission(config)
     camera_only = ContestObstacleMission(config)
-    for _ in range(config.lane2_obstacle_frames + 3):
+    for frame in range(config.trigger_frames + 3):
         lidar_only.step(
             objects=[],
             current_lane="lane2",
-            heading_deg=0.0,
-            vehicle_position_x=0.0,
             frame_width=640,
             lidar_scan=_forward_scan(500.0),
+            now_s=frame * 0.1,
         )
         camera_only.step(
             objects=forward_car,
             current_lane="lane2",
-            heading_deg=0.0,
-            vehicle_position_x=0.0,
             frame_width=640,
             lidar_scan=_forward_scan(config.lidar_obstacle_distance_mm + 500.0),
+            now_s=frame * 0.1,
         )
 
-    assert lidar_only.phase == ContestObstaclePhase.MONITOR_LANE2
-    assert camera_only.phase == ContestObstaclePhase.MONITOR_LANE2
+    assert lidar_only.phase == ContestObstaclePhase.LANE_FOLLOW
+    assert camera_only.phase == ContestObstaclePhase.LANE_FOLLOW
 
 
 def test_mission_does_not_trigger_when_forward_is_clear():
     config = ContestObstacleMissionConfig()
     mission = ContestObstacleMission(config)
 
-    for _ in range(config.lane2_obstacle_frames + 3):
+    for frame in range(config.trigger_frames + 3):
         mission.step(
             objects=[],
             current_lane="lane2",
-            heading_deg=0.0,
-            vehicle_position_x=0.0,
             frame_width=640,
             lidar_scan=_forward_scan(config.lidar_obstacle_distance_mm + 500.0),
+            now_s=frame * 0.1,
         )
 
-    assert mission.phase == ContestObstaclePhase.MONITOR_LANE2
+    assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
 
 
 def test_mission_side_obstacle_no_longer_triggers():
@@ -176,17 +172,16 @@ def test_mission_side_obstacle_no_longer_triggers():
     mission = ContestObstacleMission(config)
     left_scan = np.array([[90.0, 400.0]], dtype=np.float32)
 
-    for _ in range(config.lane2_obstacle_frames + 3):
+    for frame in range(config.trigger_frames + 3):
         mission.step(
             objects=[],
             current_lane="lane2",
-            heading_deg=0.0,
-            vehicle_position_x=0.0,
             frame_width=640,
             lidar_scan=left_scan,
+            now_s=frame * 0.1,
         )
 
-    assert mission.phase == ContestObstaclePhase.MONITOR_LANE2
+    assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
 
 
 def test_obstacle_in_other_lane_is_ignored_when_lane_labels_exist():

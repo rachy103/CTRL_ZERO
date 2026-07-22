@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Iterable, Sequence
@@ -64,12 +65,9 @@ class LaneChangeState:
 
 
 class ContestObstaclePhase(str, Enum):
-    MONITOR_LANE2 = "monitor_lane2"
-    CHANGE_TO_LANE1 = "change_to_lane1"
-    STABILIZE_LANE1 = "stabilize_lane1"
-    FOLLOW_LANE1 = "follow_lane1"
-    CHANGE_TO_LANE2 = "change_to_lane2"
-    STABILIZE_LANE2 = "stabilize_lane2"
+    LANE_FOLLOW = "lane_follow"
+    AVOID_SHIFT_OUT = "avoid_shift_out"
+    AVOID_PASS = "avoid_pass"
 
 
 @dataclass(frozen=True)
@@ -77,29 +75,18 @@ class ContestObstacleMissionConfig:
     enabled: bool = True
     camera_min_confidence: float = 0.50
     lidar_obstacle_distance_mm: float = 1000.0
-    # The obstacle to avoid is a car directly ahead, so both monitoring phases
-    # watch the forward cone (ROS 0 = raw 180 on this vehicle, confirmed with
-    # lidar_probe.py).  The original contest values (ROS +/-90) watched the
-    # sides because that robot's LiDAR was mounted with forward at ROS +90.
-    lane2_lidar_min_ros_deg: float = -10.0
-    lane2_lidar_max_ros_deg: float = 10.0
-    lane1_lidar_min_ros_deg: float = -10.0
-    lane1_lidar_max_ros_deg: float = 10.0
+    lidar_min_ros_deg: float = -10.0
+    lidar_max_ros_deg: float = 10.0
     raw_angle_for_ros_zero_deg: float = 180.0
-    lane2_obstacle_frames: int = 5
-    lane1_obstacle_frames: int = 3
-    lane1_clear_frames: int = 3
-    lane_change_complete_position_px: float = 30.0
-    stabilization_frames: int = 3
+    trigger_frames: int = 5
     cruise_speed: int = 255
-    change_to_lane1_steering: float = -10.0
-    change_to_lane2_steering: float = 7.0
-    source_steering_limit: float = 10.0
+    lane2_shift_steer: int = -60
+    lane1_shift_steer: int = 60
+    shift_out_duration_s: float = 0.70
+    pass_steer: int = 0
+    pass_duration_s: float = 0.50
+    retrigger_cooldown_s: float = 1.0
     drive_steering_limit: int = 80
-    heading_norm_deg: float = 50.0
-    angle_weight: float = 0.7
-    position_weight: float = 0.05
-
 
 @dataclass(frozen=True)
 class ContestCarObservation:
@@ -128,67 +115,47 @@ def detect_contest_car(
     return ContestCarObservation(False, 0.0, None)
 
 
-def source_steering_to_drive(
-    source_steering: float,
-    drive_steering_limit: int,
-    source_steering_limit: float = 10.0,
-) -> int:
-    """Map the source MotionCommand [-10, 10] range to DriveCommand."""
-    source_limit = max(abs(source_steering_limit), 1e-9)
-    source_value = clamp(source_steering, -source_limit, source_limit)
-    mapped = source_value / source_limit * abs(drive_steering_limit)
-    return int(round(clamp(mapped, -abs(drive_steering_limit), abs(drive_steering_limit))))
-
-
 class ContestObstacleMission:
-    """Frame-driven port of motion_mission.py's obstacle state transitions."""
+    """Timed obstacle mode that is independent from the lane-follow controller."""
 
     def __init__(self, config: ContestObstacleMissionConfig | None = None):
         self.config = config or ContestObstacleMissionConfig()
-        self.phase = ContestObstaclePhase.MONITOR_LANE2
+        self.phase = ContestObstaclePhase.LANE_FOLLOW
         self.current_lane: int | None = None
-        self.target_lane = 2
+        self.avoidance_source_lane: int | None = None
+        self.active_shift_steer = 0
         self.latest_lidar_range_mm: float | None = None
         self.last_car = ContestCarObservation(False, 0.0, None)
-        self.lidar_lane_change_counter = 0
-        self.lidar_lane_change_executed = False
-        self.lidar_obstacle_counter = 0
-        self.obstacle_flag = False
-        self.no_obstacle_counter = 0
-        self.steering_stable_count = 0
+        self.trigger_counter = 0
+        self.phase_started_s = 0.0
+        self.cooldown_until_s = 0.0
         self.cruise_speed = int(self.config.cruise_speed)
 
     @property
     def active(self) -> bool:
-        return self.phase != ContestObstaclePhase.MONITOR_LANE2
+        return self.phase != ContestObstaclePhase.LANE_FOLLOW
 
     @property
     def is_changing_lane(self) -> bool:
-        return self.phase in (ContestObstaclePhase.CHANGE_TO_LANE1, ContestObstaclePhase.CHANGE_TO_LANE2)
+        return self.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
 
     @property
     def ignoring_obstacles(self) -> bool:
-        return self.is_changing_lane or self.phase in (
-            ContestObstaclePhase.STABILIZE_LANE1,
-            ContestObstaclePhase.STABILIZE_LANE2,
-        )
+        return self.active
 
     def step(
         self,
         *,
         objects: Sequence[DetectedObject],
         current_lane: int | str | None,
-        heading_deg: float | None,
-        vehicle_position_x: float | None,
         frame_width: int,
         lidar_scan: np.ndarray | None,
         cruise_speed: int | None = None,
+        now_s: float | None = None,
     ) -> DriveCommand | None:
+        now = time.monotonic() if now_s is None else float(now_s)
         observed_lane = _contest_lane_number(current_lane)
         if observed_lane is not None:
-            # Keep the last reliable lane through short perception dropouts.
-            # Obstacles can obscure lane markings precisely when avoidance
-            # needs to trigger, so a missing label must not erase lane state.
             self.current_lane = observed_lane
         self.latest_lidar_range_mm = self._lidar_range(lidar_scan)
         self.last_car = detect_contest_car(objects, frame_width, self.config.camera_min_confidence)
@@ -197,141 +164,64 @@ class ContestObstacleMission:
 
         if not self.config.enabled:
             return None
-        if self.phase == ContestObstaclePhase.MONITOR_LANE2:
-            return self._monitor_lane2()
-        if self.phase == ContestObstaclePhase.CHANGE_TO_LANE1:
-            return self._change_lane(1, vehicle_position_x)
-        if self.phase == ContestObstaclePhase.STABILIZE_LANE1:
-            return self._stabilize(1, heading_deg, vehicle_position_x)
-        if self.phase == ContestObstaclePhase.FOLLOW_LANE1:
-            return self._follow_lane1(heading_deg, vehicle_position_x)
-        if self.phase == ContestObstaclePhase.CHANGE_TO_LANE2:
-            return self._change_lane(2, vehicle_position_x)
-        if self.phase == ContestObstaclePhase.STABILIZE_LANE2:
-            return self._stabilize(2, heading_deg, vehicle_position_x)
-        return None
+        if self.active:
+            return self._avoidance_command(now)
+        return self._lane_follow_step(now)
 
     def _lidar_range(self, scan: np.ndarray | None) -> float | None:
-        if self.current_lane == 2:
-            start = self.config.lane2_lidar_min_ros_deg
-            end = self.config.lane2_lidar_max_ros_deg
-        else:
-            # This is also the source fallback when lane information is absent.
-            start = self.config.lane1_lidar_min_ros_deg
-            end = self.config.lane1_lidar_max_ros_deg
-        # Use the nearest return in the cone, not the mean: a single close car
-        # flanked by far background must trip the threshold, which a sector
-        # average would wash out.
         return min_distance_mm_in_ros_sector(
             scan,
-            start,
-            end,
+            self.config.lidar_min_ros_deg,
+            self.config.lidar_max_ros_deg,
             self.config.raw_angle_for_ros_zero_deg,
         )
 
-    def _monitor_lane2(self) -> DriveCommand | None:
-        if self.current_lane != 2 or self.lidar_lane_change_executed:
-            return None
-        # Avoidance starts only while both sensors agree that a car is ahead.
-        # Requiring agreement on every consecutive frame prevents a stale
-        # detection from either sensor from triggering the lane change alone.
-        if self.last_car.detected and self._lidar_is_near():
-            self.lidar_lane_change_counter += 1
-        else:
-            self.lidar_lane_change_counter = 0
-        if self.lidar_lane_change_counter < max(1, self.config.lane2_obstacle_frames):
+    def _lane_follow_step(self, now_s: float) -> DriveCommand | None:
+        if now_s < self.cooldown_until_s:
+            self.trigger_counter = 0
             return None
 
-        self.target_lane = 1
-        self.phase = ContestObstaclePhase.CHANGE_TO_LANE1
-        self.lidar_lane_change_executed = True
-        self.lidar_lane_change_counter = 0
-        return self._lane_change_command(1)
-
-    def _change_lane(self, target_lane: int, vehicle_position_x: float | None) -> DriveCommand:
-        command = self._lane_change_command(target_lane)
-        if (
-            self.current_lane == target_lane
-            and vehicle_position_x is not None
-            and abs(vehicle_position_x) <= self.config.lane_change_complete_position_px
-        ):
-            self.steering_stable_count = 0
-            self.phase = (
-                ContestObstaclePhase.STABILIZE_LANE1
-                if target_lane == 1
-                else ContestObstaclePhase.STABILIZE_LANE2
-            )
-        return command
-
-    def _stabilize(
-        self,
-        lane_number: int,
-        heading_deg: float | None,
-        vehicle_position_x: float | None,
-    ) -> DriveCommand:
-        source_steering = self._lane_follow_source_steering(heading_deg, vehicle_position_x)
-        command = self._command(source_steering, f"obstacle_stabilize_lane{lane_number}")
-
-        # motion_mission.py clamps steering to [-10, 10] immediately before
-        # this <= 10 test, so its actual behavior is an unconditional 3 frames.
-        if abs(source_steering) <= self.config.source_steering_limit:
-            self.steering_stable_count += 1
+        if self.current_lane in (1, 2) and self.last_car.detected and self._lidar_is_near():
+            self.trigger_counter += 1
         else:
-            self.steering_stable_count = 0
-        if self.steering_stable_count >= max(1, self.config.stabilization_frames):
-            self.steering_stable_count = 0
-            if lane_number == 1:
-                self.phase = ContestObstaclePhase.FOLLOW_LANE1
-            else:
-                self._rearm_for_next_obstacle()
-        return command
+            self.trigger_counter = 0
+        if self.trigger_counter < max(1, self.config.trigger_frames):
+            return None
 
-    def _rearm_for_next_obstacle(self) -> None:
-        """Return to lane-2 monitoring after completing one avoidance cycle."""
-        self.phase = ContestObstaclePhase.MONITOR_LANE2
-        self.target_lane = 2
-        self.lidar_lane_change_counter = 0
-        self.lidar_lane_change_executed = False
-        self.lidar_obstacle_counter = 0
-        self.obstacle_flag = False
-        self.no_obstacle_counter = 0
-
-    def _follow_lane1(
-        self,
-        heading_deg: float | None,
-        vehicle_position_x: float | None,
-    ) -> DriveCommand:
-        if self.current_lane != 1:
-            return self._command(
-                self._lane_follow_source_steering(heading_deg, vehicle_position_x),
-                "obstacle_lane1_wait_for_lane",
-            )
-
-        source_steering = self._lane_follow_source_steering(heading_deg, vehicle_position_x)
-        self._update_lane1_lidar()
-        return self._command(source_steering, "obstacle_lane1_follow")
-
-    def _update_lane1_lidar(self) -> None:
-        if self._lidar_is_near():
-            self.lidar_obstacle_counter += 1
-            if self.lidar_obstacle_counter >= max(1, self.config.lane1_obstacle_frames) and not self.obstacle_flag:
-                self.obstacle_flag = True
-        else:
-            self.lidar_obstacle_counter = 0
-
-        lidar_is_clear = (
-            self.latest_lidar_range_mm is not None
-            and self.latest_lidar_range_mm > self.config.lidar_obstacle_distance_mm
+        self.trigger_counter = 0
+        self.phase = ContestObstaclePhase.AVOID_SHIFT_OUT
+        self.phase_started_s = now_s
+        self.avoidance_source_lane = self.current_lane
+        self.active_shift_steer = (
+            self.config.lane2_shift_steer
+            if self.avoidance_source_lane == 2
+            else self.config.lane1_shift_steer
         )
-        if self.obstacle_flag and lidar_is_clear:
-            self.no_obstacle_counter += 1
-            if self.no_obstacle_counter >= max(1, self.config.lane1_clear_frames):
-                self.target_lane = 2
-                self.phase = ContestObstaclePhase.CHANGE_TO_LANE2
-                self.obstacle_flag = False
-                self.no_obstacle_counter = 0
-        elif not self.obstacle_flag:
-            self.no_obstacle_counter = 0
+        return self._command(self.active_shift_steer, "obstacle_avoid_shift_out")
+
+    def _avoidance_command(self, now_s: float) -> DriveCommand | None:
+        if self.phase == ContestObstaclePhase.AVOID_SHIFT_OUT:
+            duration = max(0.0, self.config.shift_out_duration_s)
+            if now_s - self.phase_started_s < duration:
+                return self._command(self.active_shift_steer, "obstacle_avoid_shift_out")
+            self.phase = ContestObstaclePhase.AVOID_PASS
+            self.phase_started_s += duration
+
+        if self.phase == ContestObstaclePhase.AVOID_PASS:
+            duration = max(0.0, self.config.pass_duration_s)
+            if now_s - self.phase_started_s < duration:
+                return self._command(self.config.pass_steer, "obstacle_avoid_pass")
+            self._finish_avoidance(now_s)
+        return None
+
+    def _finish_avoidance(self, now_s: float) -> None:
+        # There is intentionally no steering phase back to the source lane.
+        # Normal control resumes on the closest lane area after the pass.
+        self.phase = ContestObstaclePhase.LANE_FOLLOW
+        self.trigger_counter = 0
+        self.avoidance_source_lane = None
+        self.active_shift_steer = 0
+        self.cooldown_until_s = now_s + max(0.0, self.config.retrigger_cooldown_s)
 
     def _lidar_is_near(self) -> bool:
         return (
@@ -339,36 +229,9 @@ class ContestObstacleMission:
             and self.latest_lidar_range_mm <= self.config.lidar_obstacle_distance_mm
         )
 
-    def _lane_change_command(self, target_lane: int) -> DriveCommand:
-        if target_lane == 1:
-            return self._command(
-                self.config.change_to_lane1_steering,
-                "obstacle_lane_change_2_to_1",
-            )
-        return self._command(
-            self.config.change_to_lane2_steering,
-            "obstacle_lane_change_1_to_2",
-        )
-
-    def _lane_follow_source_steering(
-        self,
-        heading_deg: float | None,
-        vehicle_position_x: float | None,
-    ) -> int:
-        heading = heading_deg or 0.0
-        position = vehicle_position_x or 0.0
-        angle_norm = max(abs(self.config.heading_norm_deg), 1e-9)
-        mapped = (heading / angle_norm) * self.config.source_steering_limit * self.config.angle_weight
-        adjust = -position * self.config.position_weight
-        return int(clamp(mapped + adjust, -self.config.source_steering_limit, self.config.source_steering_limit))
-
-    def _command(self, source_steering: float, reason: str) -> DriveCommand:
+    def _command(self, steering: int, reason: str) -> DriveCommand:
         return DriveCommand(
-            steer=source_steering_to_drive(
-                source_steering,
-                self.config.drive_steering_limit,
-                self.config.source_steering_limit,
-            ),
+            steer=int(clamp(steering, -abs(self.config.drive_steering_limit), abs(self.config.drive_steering_limit))),
             speed=self.cruise_speed,
             reason=reason,
         )

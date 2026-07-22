@@ -5,6 +5,7 @@ import numpy as np
 from ctrl_zero.control import DriveCommand
 from ctrl_zero.obstacles import (
     ContestObstacleMission,
+    ContestObstacleMissionConfig,
     ContestObstaclePhase,
     detect_contest_car,
 )
@@ -31,49 +32,41 @@ def car_with_area(area: float, center_x: float = 320.0) -> DetectedObject:
     )
 
 
-def lane2_scan(distance_mm: float) -> np.ndarray:
-    # The obstacle is a car directly ahead: forward is raw 180 = ROS 0 on this
-    # vehicle, with far background off to the side.
-    return np.array([[180.0, distance_mm], [90.0, 3000.0]], dtype=np.float32)
-
-
-def lane1_scan(distance_mm: float) -> np.ndarray:
-    # Lane 1 monitoring also watches the forward cone (raw 180 = ROS 0).
+def forward_scan(distance_mm: float) -> np.ndarray:
     return np.array([[180.0, distance_mm], [90.0, 3000.0]], dtype=np.float32)
 
 
 def step(
     mission: ContestObstacleMission,
     *,
-    lane: int | None,
+    now_s: float,
     scan: np.ndarray | None,
     objects=(),
-    heading_deg: float = 0.0,
-    vehicle_position_x: float = 0.0,
+    cruise_speed: int | None = None,
+    lane: int | None = 2,
 ):
     return mission.step(
         objects=objects,
         current_lane=f"lane{lane}" if lane is not None else None,
-        heading_deg=heading_deg,
-        vehicle_position_x=vehicle_position_x,
         frame_width=FRAME_WIDTH,
         lidar_scan=scan,
+        cruise_speed=cruise_speed,
+        now_s=now_s,
     )
 
 
-def enter_lane1_follow(mission: ContestObstacleMission) -> None:
-    for _ in range(5):
-        step(mission, lane=2, scan=lane2_scan(900.0), objects=[car_with_area(6000.0)])
-    assert mission.phase == ContestObstaclePhase.CHANGE_TO_LANE1
-
-    completion_command = step(mission, lane=1, scan=lane1_scan(900.0), vehicle_position_x=30.0)
-    assert completion_command == DriveCommand(-80, 255, "obstacle_lane_change_2_to_1")
-    assert mission.phase == ContestObstaclePhase.STABILIZE_LANE1
-
-    for _ in range(3):
-        stabilization_command = step(mission, lane=1, scan=lane1_scan(1400.0))
-        assert stabilization_command.speed == 255
-    assert mission.phase == ContestObstaclePhase.FOLLOW_LANE1
+def timed_config(**overrides) -> ContestObstacleMissionConfig:
+    values = {
+        "trigger_frames": 1,
+        "lane2_shift_steer": -60,
+        "lane1_shift_steer": 60,
+        "shift_out_duration_s": 0.70,
+        "pass_steer": 0,
+        "pass_duration_s": 0.50,
+        "retrigger_cooldown_s": 1.0,
+    }
+    values.update(overrides)
+    return ContestObstacleMissionConfig(**values)
 
 
 def test_car_detection_uses_center_region_and_bbox_area():
@@ -88,153 +81,119 @@ def test_car_detection_uses_center_region_and_bbox_area():
 
     assert observation.detected
     assert observation.obj is centered
-    assert observation.area == 6000.0
 
 
-def test_lane2_avoidance_starts_only_after_five_camera_and_lidar_detections():
-    mission = ContestObstacleMission()
+def test_lane_follow_remains_separate_until_both_sensors_trigger():
+    mission = ContestObstacleMission(ContestObstacleMissionConfig(trigger_frames=5))
     base = DriveCommand(steer=13, speed=255, reason="contest")
-    clear_safety = SafetyDecision.clear()
-    forward_car = [car_with_area(6000.0)]
+    car = [car_with_area(6000.0)]
 
-    for _ in range(4):
-        mission_command = step(mission, lane=2, scan=lane2_scan(900.0), objects=forward_car)
+    for frame in range(4):
+        mission_command = step(mission, now_s=frame * 0.1, scan=forward_scan(900.0), objects=car)
         assert mission_command is None
-        assert apply_obstacle_mission_override(base, mission_command, clear_safety) is base
+        assert apply_obstacle_mission_override(base, mission_command, SafetyDecision.clear()) is base
 
-    mission_command = step(mission, lane=2, scan=lane2_scan(900.0), objects=forward_car)
+    mission_command = step(mission, now_s=0.4, scan=forward_scan(900.0), objects=car)
 
-    assert mission.lidar_lane_change_executed
-    assert mission.target_lane == 1
-    assert mission.phase == ContestObstaclePhase.CHANGE_TO_LANE1
-    assert mission_command == DriveCommand(-80, 255, "obstacle_lane_change_2_to_1")
-
-    # Detection changes during the maneuver do not change its locked target.
-    ignored = step(
-        mission,
-        lane=2,
-        scan=lane2_scan(500.0),
-        objects=[car_with_area(20000.0)],
-    )
-    assert ignored == DriveCommand(-80, 255, "obstacle_lane_change_2_to_1")
-    assert mission.phase == ContestObstaclePhase.CHANGE_TO_LANE1
+    assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
+    assert mission_command == DriveCommand(-60, 255, "obstacle_avoid_shift_out")
 
 
-def test_lane2_detection_counter_requires_consecutive_sensor_agreement():
-    mission = ContestObstacleMission()
-    forward_car = [car_with_area(6000.0)]
+def test_trigger_counter_requires_consecutive_camera_and_lidar_agreement():
+    mission = ContestObstacleMission(ContestObstacleMissionConfig(trigger_frames=3))
+    car = [car_with_area(6000.0)]
 
-    for _ in range(4):
-        assert step(mission, lane=2, scan=lane2_scan(900.0), objects=forward_car) is None
-    assert mission.lidar_lane_change_counter == 4
+    assert step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car) is None
+    assert step(mission, now_s=0.1, scan=forward_scan(900.0), objects=car) is None
+    assert mission.trigger_counter == 2
 
-    # Losing either the camera or LiDAR condition resets the shared counter.
-    assert step(mission, lane=2, scan=lane2_scan(900.0), objects=[]) is None
-    assert mission.lidar_lane_change_counter == 0
+    assert step(mission, now_s=0.2, scan=forward_scan(900.0), objects=[]) is None
+    assert mission.trigger_counter == 0
 
-    for _ in range(4):
-        assert step(mission, lane=2, scan=lane2_scan(900.0), objects=forward_car) is None
-    assert mission.phase == ContestObstaclePhase.MONITOR_LANE2
+    for now_s in (0.3, 0.4):
+        assert step(mission, now_s=now_s, scan=forward_scan(900.0), objects=car) is None
+    command = step(mission, now_s=0.5, scan=forward_scan(900.0), objects=car)
 
-    assert step(mission, lane=2, scan=lane2_scan(900.0), objects=forward_car).speed == 255
-    assert mission.phase == ContestObstaclePhase.CHANGE_TO_LANE1
-
-
-def test_camera_area_never_slows_stops_or_reverses_during_avoidance():
-    mission = ContestObstacleMission()
-    enter_lane1_follow(mission)
-
-    no_car = step(mission, lane=1, scan=None, heading_deg=20.0)
-    small = step(mission, lane=1, scan=None, objects=[car_with_area(4999.0)], heading_deg=20.0)
-    medium_lower = step(mission, lane=1, scan=None, objects=[car_with_area(5000.0)], heading_deg=20.0)
-    medium_upper = step(mission, lane=1, scan=None, objects=[car_with_area(11999.0)], heading_deg=20.0)
-    large_lower = step(mission, lane=1, scan=None, objects=[car_with_area(12000.0)], heading_deg=20.0)
-    reverse = step(mission, lane=1, scan=None, objects=[car_with_area(15000.0)], heading_deg=20.0)
-
-    commands = (no_car, small, medium_lower, medium_upper, large_lower, reverse)
-    assert all(command.speed == 255 for command in commands)
-    assert all(command.reason == "obstacle_lane1_follow" for command in commands)
-    assert all(command.steer == medium_lower.steer for command in commands)
+    assert command is not None
+    assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
 
 
-def test_obstacle_pass_return_to_lane2_rearms_for_next_obstacle():
-    mission = ContestObstacleMission()
-    enter_lane1_follow(mission)
-    forward_car = [car_with_area(6000.0)]
+def test_lane2_avoidance_shifts_left_passes_and_has_no_return_steering():
+    mission = ContestObstacleMission(timed_config(retrigger_cooldown_s=0.0))
+    car = [car_with_area(6000.0)]
 
-    for _ in range(3):
-        command = step(mission, lane=1, scan=lane1_scan(900.0), objects=forward_car)
-        assert command.speed == 255
-    assert mission.obstacle_flag
+    commands = [step(mission, now_s=10.0, scan=forward_scan(900.0), objects=car)]
+    commands.append(step(mission, now_s=10.69, scan=None, objects=[]))
+    commands.append(step(mission, now_s=10.71, scan=None, objects=[]))
+    commands.append(step(mission, now_s=11.19, scan=None, objects=[]))
 
-    for _ in range(3):
-        command = step(mission, lane=1, scan=lane1_scan(1200.0), objects=forward_car)
-        assert command.speed == 255
+    assert [command.reason for command in commands if command is not None] == [
+        "obstacle_avoid_shift_out",
+        "obstacle_avoid_shift_out",
+        "obstacle_avoid_pass",
+        "obstacle_avoid_pass",
+    ]
+    assert [command.steer for command in commands if command is not None] == [-60, -60, 0, 0]
 
-    assert mission.phase == ContestObstaclePhase.CHANGE_TO_LANE2
-    assert mission.target_lane == 2
+    finished = step(mission, now_s=11.21, scan=None, objects=[])
 
-    return_command = step(mission, lane=1, scan=lane1_scan(1200.0), objects=[car_with_area(20000.0)])
-    assert return_command == DriveCommand(56, 255, "obstacle_lane_change_1_to_2")
-
-    completion_command = step(mission, lane=2, scan=lane2_scan(1200.0), vehicle_position_x=-30.0)
-    assert completion_command == DriveCommand(56, 255, "obstacle_lane_change_1_to_2")
-    assert mission.phase == ContestObstaclePhase.STABILIZE_LANE2
-
-    for _ in range(3):
-        stabilization_command = step(mission, lane=2, scan=lane2_scan(1200.0))
-        assert stabilization_command.speed == 255
-    assert mission.phase == ContestObstaclePhase.MONITOR_LANE2
+    assert finished is None
+    assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
     assert not mission.active
-    assert not mission.lidar_lane_change_executed
 
-    # While monitoring with no camera detection, main returns the base command.
-    mission_command = step(mission, lane=2, scan=lane2_scan(500.0))
-    base = DriveCommand(steer=-7, speed=255, reason="contest")
-    restored = apply_obstacle_mission_override(base, mission_command, SafetyDecision.clear())
-
-    assert mission_command is None
-    assert restored is base
-
-    # A second obstacle can trigger another complete avoidance cycle even if
-    # its car detection briefly obscures the lane label.
-    for _ in range(4):
-        assert step(mission, lane=None, scan=lane2_scan(900.0), objects=forward_car) is None
-    second_avoidance = step(mission, lane=None, scan=lane2_scan(900.0), objects=forward_car)
-
-    assert second_avoidance == DriveCommand(-80, 255, "obstacle_lane_change_2_to_1")
-    assert mission.phase == ContestObstaclePhase.CHANGE_TO_LANE1
+    base = DriveCommand(steer=-12, speed=255, reason="contest")
+    assert apply_obstacle_mission_override(base, finished, SafetyDecision.clear()) is base
 
 
-def test_source_clear_counter_is_not_reset_by_near_sample_while_forward():
-    mission = ContestObstacleMission()
-    enter_lane1_follow(mission)
-    forward_car = [car_with_area(6000.0)]
+def test_lane1_avoidance_shifts_right_and_locks_direction_until_pass():
+    mission = ContestObstacleMission(timed_config())
+    car = [car_with_area(6000.0)]
 
-    for _ in range(3):
-        step(mission, lane=1, scan=lane1_scan(900.0), objects=forward_car)
-    assert mission.obstacle_flag
+    start = step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=1)
+    # The detector may report lane 2 mid-maneuver, but the direction selected
+    # from the source lane must remain locked until the pass phase.
+    active = step(mission, now_s=0.3, scan=None, objects=[], lane=2)
 
-    step(mission, lane=1, scan=lane1_scan(1200.0), objects=forward_car)
-    assert mission.no_obstacle_counter == 1
-
-    step(mission, lane=1, scan=lane1_scan(900.0), objects=forward_car)
-    assert mission.no_obstacle_counter == 1
-
-    step(mission, lane=1, scan=lane1_scan(1200.0), objects=forward_car)
-    step(mission, lane=1, scan=lane1_scan(1200.0), objects=forward_car)
-    assert mission.phase == ContestObstaclePhase.CHANGE_TO_LANE2
+    assert start == DriveCommand(60, 255, "obstacle_avoid_shift_out")
+    assert active == DriveCommand(60, 255, "obstacle_avoid_shift_out")
+    assert mission.avoidance_source_lane == 1
 
 
-def test_traffic_light_stop_is_preserved_during_mission_override():
+def test_avoidance_ignores_new_detections_and_keeps_runtime_max_speed():
+    mission = ContestObstacleMission(timed_config())
+    car = [car_with_area(6000.0)]
+
+    start = step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, cruise_speed=235)
+    large_car = [car_with_area(20000.0)]
+    active = step(mission, now_s=0.3, scan=forward_scan(100.0), objects=large_car, cruise_speed=235)
+
+    assert start == DriveCommand(-60, 235, "obstacle_avoid_shift_out")
+    assert active == DriveCommand(-60, 235, "obstacle_avoid_shift_out")
+
+
+def test_next_obstacle_can_trigger_after_timed_mode_and_cooldown():
+    mission = ContestObstacleMission(
+        timed_config(shift_out_duration_s=0.10, pass_duration_s=0.10, retrigger_cooldown_s=1.0)
+    )
+    car = [car_with_area(6000.0)]
+
+    assert step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car) is not None
+    assert step(mission, now_s=0.1, scan=None, objects=[]) is not None
+    assert step(mission, now_s=0.21, scan=None, objects=[]) is None
+    assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
+
+    assert step(mission, now_s=1.20, scan=forward_scan(900.0), objects=car, lane=1) is None
+    second = step(mission, now_s=1.21, scan=forward_scan(900.0), objects=car, lane=1)
+
+    assert second == DriveCommand(60, 255, "obstacle_avoid_shift_out")
+    assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
+
+
+def test_traffic_light_stop_is_preserved_during_avoidance_override():
     base_command = DriveCommand(12, 0, "traffic_light_stop")
-    mission_command = DriveCommand(-80, 255, "obstacle_lane_change_2_to_1")
+    mission_command = DriveCommand(-60, 255, "obstacle_avoid_shift_out")
     traffic_stop = SafetyDecision(speed_scale=0.0, should_stop=True, reason="traffic_light_stop")
 
-    command = apply_obstacle_mission_override(
-        base_command,
-        mission_command,
-        traffic_stop,
-    )
+    command = apply_obstacle_mission_override(base_command, mission_command, traffic_stop)
 
     assert command is base_command

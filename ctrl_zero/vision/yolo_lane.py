@@ -1291,8 +1291,6 @@ class YOLOLaneDetector:
         if center_near is not None and center_far is not None:
             cv2.line(vis, (int(center_near), near_y), (int(center_far), far_y), (255, 255, 0), 2)
             cv2.circle(vis, (int(center_near), near_y), 6, (255, 255, 0), -1)
-        cv2.putText(vis, f"yolo conf={confidence:.2f}", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
-        cv2.putText(vis, f"yolo conf={confidence:.2f}", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
         return vis
 
     def _annotate_drivable_area(
@@ -1328,10 +1326,6 @@ class YOLOLaneDetector:
             cv2.line(vis, (int(center_near), near_y), (int(center_far), far_y), (255, 255, 0), 2)
             cv2.circle(vis, (int(center_near), near_y), 6, (255, 255, 0), -1)
 
-        cv2.putText(vis, f"yolo conf={confidence:.2f}", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
-        cv2.putText(vis, f"yolo conf={confidence:.2f}", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-        cv2.putText(vis, label, (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
-        cv2.putText(vis, label, (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
         return vis
 
     def _annotate_lane_area(
@@ -1380,10 +1374,6 @@ class YOLOLaneDetector:
             cv2.line(vis, (int(center_near), near_y), (int(center_far), far_y), (255, 255, 0), 2)
             cv2.circle(vis, (int(center_near), near_y), 6, (255, 255, 0), -1)
 
-        cv2.putText(vis, f"yolo conf={confidence:.2f}", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
-        cv2.putText(vis, f"yolo conf={confidence:.2f}", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-        cv2.putText(vis, label, (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
-        cv2.putText(vis, label, (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
         return vis
 
     def _draw_fit(self, image, fit, near_y, far_y, color) -> None:
