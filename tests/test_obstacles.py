@@ -105,13 +105,13 @@ def test_mission_triggers_lane_change_on_forward_lidar_obstacle():
     config = ContestObstacleMissionConfig()
     mission = ContestObstacleMission(config)
 
-    # A car ahead within the obstacle distance should trip after the required
-    # number of consecutive frames, then change toward lane 1.
+    # Camera and LiDAR must agree that a car is ahead for the required number
+    # of consecutive frames before changing toward lane 1.
     command = None
     for _ in range(config.lane2_obstacle_frames):
         assert mission.phase == ContestObstaclePhase.MONITOR_LANE2
         command = mission.step(
-            objects=[],
+            objects=[obj("car", BoundingBox(280, 100, 360, 180))],
             current_lane="lane2",
             heading_deg=0.0,
             vehicle_position_x=0.0,
@@ -122,6 +122,34 @@ def test_mission_triggers_lane_change_on_forward_lidar_obstacle():
     assert mission.phase == ContestObstaclePhase.CHANGE_TO_LANE1
     assert command is not None
     assert command.reason == "obstacle_lane_change_2_to_1"
+
+
+def test_mission_does_not_trigger_from_only_one_sensor():
+    config = ContestObstacleMissionConfig()
+    forward_car = [obj("car", BoundingBox(280, 100, 360, 180))]
+
+    lidar_only = ContestObstacleMission(config)
+    camera_only = ContestObstacleMission(config)
+    for _ in range(config.lane2_obstacle_frames + 3):
+        lidar_only.step(
+            objects=[],
+            current_lane="lane2",
+            heading_deg=0.0,
+            vehicle_position_x=0.0,
+            frame_width=640,
+            lidar_scan=_forward_scan(500.0),
+        )
+        camera_only.step(
+            objects=forward_car,
+            current_lane="lane2",
+            heading_deg=0.0,
+            vehicle_position_x=0.0,
+            frame_width=640,
+            lidar_scan=_forward_scan(config.lidar_obstacle_distance_mm + 500.0),
+        )
+
+    assert lidar_only.phase == ContestObstaclePhase.MONITOR_LANE2
+    assert camera_only.phase == ContestObstaclePhase.MONITOR_LANE2
 
 
 def test_mission_does_not_trigger_when_forward_is_clear():

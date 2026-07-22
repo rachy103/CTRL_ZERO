@@ -31,7 +31,7 @@ RUN_MODE = "auto"
 LANE_BACKEND = "yolo"
 
 # Camera
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 CAMERA_BACKEND = "dshow"  # Windows: "dshow" 권장. 필요 시 "msmf" 또는 "any".
 CAMERA_WIDTH = 0
 CAMERA_HEIGHT = 0
@@ -39,13 +39,13 @@ CAMERA_FPS = 0
 
 # Arduino / motor
 USE_ARDUINO = True
-ARDUINO_PORT = "COM3"
+ARDUINO_PORT = "COM6"
 ARDUINO_BAUDRATE = 9600
 DRIVE_MAX_PWM = 255
 
 # LiDAR
 USE_LIDAR = True
-LIDAR_PORT = "COM4"  # 예: "COM5"
+LIDAR_PORT = "COM3"
 LIDAR_POLL_EVERY_N_FRAMES = 2
 LIDAR_FRONT_MIN_ANGLE_DEG = 177.5
 LIDAR_FRONT_MAX_ANGLE_DEG = 182.5
@@ -61,9 +61,6 @@ OBSTACLE_DISTANCE_MM = 3000.0
 OBSTACLE_LANE2_DETECTION_FRAMES = 5
 OBSTACLE_LANE1_DETECTION_FRAMES = 3
 OBSTACLE_CLEAR_FRAMES = 3
-OBSTACLE_SMALL_AREA = 5000.0
-OBSTACLE_MEDIUM_AREA = 12000.0
-OBSTACLE_LARGE_AREA = 15000.0
 
 # Traffic light stop gating. Stop only when red/yellow bbox area reaches this frame-area ratio.
 TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.058
@@ -366,9 +363,7 @@ def main() -> None:
             lane2_obstacle_frames=OBSTACLE_LANE2_DETECTION_FRAMES,
             lane1_obstacle_frames=OBSTACLE_LANE1_DETECTION_FRAMES,
             lane1_clear_frames=OBSTACLE_CLEAR_FRAMES,
-            small_area_threshold=OBSTACLE_SMALL_AREA,
-            medium_area_threshold=OBSTACLE_MEDIUM_AREA,
-            large_area_threshold=OBSTACLE_LARGE_AREA,
+            cruise_speed=MAX_SPEED,
             drive_steering_limit=MAX_STEER,
         )
     )
@@ -452,6 +447,7 @@ def main() -> None:
                         vehicle_position_x=vehicle_position_x,
                         frame_width=lane.annotated.shape[1],
                         lidar_scan=last_lidar_scan,
+                        cruise_speed=controller.config.max_speed,
                     )
                 command = apply_obstacle_mission_override(base_command, mission_command, safety)
             else:
