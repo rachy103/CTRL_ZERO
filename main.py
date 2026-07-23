@@ -13,6 +13,7 @@ from ctrl_zero.control import DriveCommand, DriveConfig, DriveController
 from ctrl_zero.lidar import LidarConfig, LidarReader, ObstacleDecision, analyze_obstacles
 from ctrl_zero.logger import DriveLogger, LogConfig
 from ctrl_zero.obstacles import ContestObstacleMission, ContestObstacleMissionConfig
+from ctrl_zero.parking_hard import ParkingHardConfig, ParkingHardMission
 from ctrl_zero.safety import SafetyDecision, build_safety_decision
 from ctrl_zero.traffic_light import traffic_light_object
 from ctrl_zero.ui import draw_status
@@ -77,6 +78,33 @@ OBSTACLE_PASS_ALIGN_HEADING_DEG = 5.0
 OBSTACLE_PASS_ALIGN_OFFSET_NORM = 0.15
 OBSTACLE_PASS_MAX_SECONDS = 1.65
 OBSTACLE_RETRIGGER_COOLDOWN_SECONDS = 0.0
+
+# Parallel parking (--mode parking). LiDAR-only, drives the car standalone.
+# Sectors are ROS angles (forward=0, left=+90, right=-90); parked cars are on the right.
+PARKING_SEARCH_SECTOR_ROS_DEG = (-95.0, -85.0)   # right side scanned while approaching
+PARKING_LEFT_SECTOR_ROS_DEG = (85.0, 95.0)
+PARKING_RIGHT_SECTOR_ROS_DEG = (-95.0, -85.0)
+PARKING_SEARCH_DETECT_MM = 2000.0                # a parked car within this = detected
+PARKING_SIDE_DETECT_MM = 1000.0                  # side car distance during reverse
+PARKING_GO_OUT_DETECT_MM = 1500.0                # side car distance while exiting
+PARKING_DETECT_FRAMES = 3
+PARKING_CLEAR_FRAMES = 3
+PARKING_INIT_STEER = 7                            # start-position dependent; tune first
+PARKING_STRAIGHT_STEER = -1                       # -1 drives straight (pot calibration)
+PARKING_FIRST_STOP_STEER = 30
+PARKING_GO_OUT_TURN_STEER = 30
+PARKING_CENTERING_DEADBAND_MM = 400.0
+PARKING_CENTERING_STEER = 3
+PARKING_SEARCH_SPEED = 100
+PARKING_REVERSE_RIGHT_SPEED = -50
+PARKING_REVERSE_STRAIGHT_SPEED = -70
+PARKING_ADJUST_FORWARD_SPEED = 70
+PARKING_GO_OUT_TURN_SPEED = 35
+PARKING_GO_OUT_STRAIGHT_SPEED = 70
+PARKING_FIRST_STOP_SECONDS = 2.0
+PARKING_REVERSE_PAUSE_SECONDS = 4.0
+PARKING_ADJUST_FORWARD_MIN_SECONDS = 3.0
+PARKING_GO_OUT_TURN_MIN_SECONDS = 25.0
 
 # Traffic light stop gating. Stop only when red/yellow bbox area reaches this frame-area ratio.
 TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.058
@@ -206,7 +234,7 @@ def apply_obstacle_mission_override(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="CTRL_ZERO camera/LiDAR/Arduino autonomous driving runtime.")
-    parser.add_argument("--mode", choices=("vision", "manual", "auto"), default=RUN_MODE)
+    parser.add_argument("--mode", choices=("vision", "manual", "auto", "parking"), default=RUN_MODE)
     parser.add_argument("--backend", choices=("yolo",), default=LANE_BACKEND)
     parser.add_argument("--yolo-model", type=Path, default=YOLO_MODEL_PATH)
     parser.add_argument("--yolo-frame-skip", type=int, default=YOLO_FRAME_SKIP)
@@ -390,6 +418,37 @@ def main() -> None:
             retrigger_cooldown_s=OBSTACLE_RETRIGGER_COOLDOWN_SECONDS,
         )
     )
+    parking_mission = ParkingHardMission(
+        ParkingHardConfig(
+            raw_angle_for_ros_zero_deg=LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG,
+            search_sector_ros_deg=PARKING_SEARCH_SECTOR_ROS_DEG,
+            left_sector_ros_deg=PARKING_LEFT_SECTOR_ROS_DEG,
+            right_sector_ros_deg=PARKING_RIGHT_SECTOR_ROS_DEG,
+            search_detect_mm=PARKING_SEARCH_DETECT_MM,
+            side_detect_mm=PARKING_SIDE_DETECT_MM,
+            go_out_detect_mm=PARKING_GO_OUT_DETECT_MM,
+            detect_frames=PARKING_DETECT_FRAMES,
+            clear_frames=PARKING_CLEAR_FRAMES,
+            init_steer=PARKING_INIT_STEER,
+            straight_steer=PARKING_STRAIGHT_STEER,
+            first_stop_steer=PARKING_FIRST_STOP_STEER,
+            reverse_right_steer=PARKING_INIT_STEER,
+            go_out_turn_steer=PARKING_GO_OUT_TURN_STEER,
+            go_out_straight_steer=PARKING_STRAIGHT_STEER,
+            centering_deadband_mm=PARKING_CENTERING_DEADBAND_MM,
+            centering_steer=PARKING_CENTERING_STEER,
+            search_speed=PARKING_SEARCH_SPEED,
+            reverse_right_speed=PARKING_REVERSE_RIGHT_SPEED,
+            reverse_straight_speed=PARKING_REVERSE_STRAIGHT_SPEED,
+            adjust_forward_speed=PARKING_ADJUST_FORWARD_SPEED,
+            go_out_turn_speed=PARKING_GO_OUT_TURN_SPEED,
+            go_out_straight_speed=PARKING_GO_OUT_STRAIGHT_SPEED,
+            first_stop_seconds=PARKING_FIRST_STOP_SECONDS,
+            reverse_pause_seconds=PARKING_REVERSE_PAUSE_SECONDS,
+            adjust_forward_min_seconds=PARKING_ADJUST_FORWARD_MIN_SECONDS,
+            go_out_turn_min_seconds=PARKING_GO_OUT_TURN_MIN_SECONDS,
+        )
+    )
     logger = DriveLogger(
         LogConfig(
             enabled=(LOG_ENABLED or args.log) and not args.no_log,
@@ -416,6 +475,10 @@ def main() -> None:
         print("Keys: q quit, d start/resume, space stop + manual, +/- max speed, l toggle log.")
         print("Manual driving (space or --mode manual): w/s speed, a/d steer pulse, c center steer.")
         print(f"Runtime: mode={args.mode}, backend={args.backend}, motor={'on' if motor_enabled else 'dry'}")
+        if args.mode == "parking":
+            print("Parking mode: LiDAR-driven parallel parking (lane/obstacle logic bypassed).")
+            if lidar is None:
+                print("WARNING: USE_LIDAR is False; parking has no sensor input and cannot work.")
         if motor_enabled:
             print("Drive is waiting. Press d/D to start motor output.")
 
@@ -451,26 +514,32 @@ def main() -> None:
                 traffic_light_min_stop_area_ratio=TRAFFIC_LIGHT_STOP_AREA_RATIO,
             )
             if drive_started:
-                base_command = controller.compute(
-                    lane_for_control,
-                    safety,
-                    args.mode,
-                    manual_steer=manual_steer,
-                    manual_speed=manual_speed,
-                )
-                mission_command = None
-                if args.mode == "auto":
-                    mission_command = obstacle_mission.step(
-                        objects=lane.objects,
-                        current_lane=lane.lane_label or lane.lane_pair_label,
-                        frame_width=lane.annotated.shape[1],
-                        lidar_scan=last_lidar_scan,
-                        heading_deg=lane.heading_deg,
-                        offset_norm=lane.offset_norm,
-                        lane_follow_steer=base_command.steer,
-                        cruise_speed=controller.config.max_speed,
+                if args.mode == "parking":
+                    # Parking runs standalone off LiDAR; the lane controller and
+                    # obstacle mission are bypassed entirely.
+                    parking_command = parking_mission.step(last_lidar_scan)
+                    command = parking_command or DriveCommand(steer=0, speed=0, reason="parking_idle")
+                else:
+                    base_command = controller.compute(
+                        lane_for_control,
+                        safety,
+                        args.mode,
+                        manual_steer=manual_steer,
+                        manual_speed=manual_speed,
                     )
-                command = apply_obstacle_mission_override(base_command, mission_command, safety)
+                    mission_command = None
+                    if args.mode == "auto":
+                        mission_command = obstacle_mission.step(
+                            objects=lane.objects,
+                            current_lane=lane.lane_label or lane.lane_pair_label,
+                            frame_width=lane.annotated.shape[1],
+                            lidar_scan=last_lidar_scan,
+                            heading_deg=lane.heading_deg,
+                            offset_norm=lane.offset_norm,
+                            lane_follow_steer=base_command.steer,
+                            cruise_speed=controller.config.max_speed,
+                        )
+                    command = apply_obstacle_mission_override(base_command, mission_command, safety)
             else:
                 command = DriveCommand(steer=0, speed=0, reason="waiting_for_start")
             motor.send(command.steer, command.speed if motor_enabled else 0)
