@@ -48,36 +48,42 @@ DRIVE_MAX_PWM = 255
 USE_LIDAR = True
 LIDAR_PORT = "COM4"
 LIDAR_POLL_EVERY_N_FRAMES = 2
-LIDAR_FRONT_MIN_ANGLE_DEG = 100
-LIDAR_FRONT_MAX_ANGLE_DEG = 225
 LIDAR_STOP_DISTANCE_MM = 450.0
 LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 1.0
 
-# Timed obstacle mode: shift to the opposite lane, pass the obstacle, then
-# hand control back to normal lane following without steering back.
+# Timed obstacle mode: shift to the opposite lane for a fixed time, then hand
+# control straight back to normal lane following (no counter-steer pass phase).
 OBSTACLE_MISSION_ENABLED = True
 LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG = 180.0
 
-OBSTACLE_DISTANCE_MM = 3000.0
-OBSTACLE_TRIGGER_FRAMES = 5
+OBSTACLE_DISTANCE_MM = 2000.0
+OBSTACLE_TRIGGER_FRAMES = 2
+# Choose the avoidance proximity source with USE_LIDAR:
+#   True  -> LiDAR front sector (OBSTACLE_LIDAR_* / OBSTACLE_DISTANCE_MM)
+#   False -> camera only, using the car bbox bottom edge (far_y).  Trigger once
+#            far_y / frame_height >= this ratio.  A closer car sits lower in the
+#            frame, so RAISE it to react only when nearer, LOWER it to react
+#            farther, 0.0 = any central car triggers.  Watch the [OBS] log's
+#            far_y= value to tune it to your camera geometry.
+OBSTACLE_CAMERA_TRIGGER_FAR_Y_RATIO = 0.0
 
 OBSTACLE_LANE2_SHIFT_STEER = -100
 OBSTACLE_LANE1_SHIFT_STEER = 100
 OBSTACLE_SHIFT_OUT_SECONDS = 1.5
 # Extra shift-out time per unit of steering at detection (seconds per steer unit).
 # duration = OBSTACLE_SHIFT_OUT_SECONDS + |steer_at_detection| * this. 0 disables.
-OBSTACLE_SHIFT_OUT_STEER_WEIGHT = 0.0
-# Pass phase counter-steers opposite the shift, per lane, until the car matches
-# the new lane centerline in BOTH heading (<= OBSTACLE_PASS_ALIGN_HEADING_DEG) and
-# lateral position (|offset_norm| <= OBSTACLE_PASS_ALIGN_OFFSET_NORM).
-# OBSTACLE_PASS_MAX_SECONDS is a safety cap if the lane is never re-acquired.
-OBSTACLE_LANE2_PASS_STEER = 100
-OBSTACLE_LANE1_PASS_STEER = -100
-OBSTACLE_PASS_ALIGN_HEADING_DEG = 5.0
-OBSTACLE_PASS_ALIGN_OFFSET_NORM = 0.15
-OBSTACLE_PASS_MAX_SECONDS = 1.65
+OBSTACLE_SHIFT_OUT_STEER_WEIGHT = 0.003
 OBSTACLE_RETRIGGER_COOLDOWN_SECONDS = 0.0
+# Single source of truth for the front LiDAR sector, in ROS angles (forward=0,
+# left=+, right=-).  Drives BOTH the obstacle-avoidance trigger AND the UI/log
+# nearest-range display, so the number on screen always matches the wedge the
+# trigger looks at.  ROS = LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG - raw_angle.
+OBSTACLE_LIDAR_MIN_ROS_DEG = -20.0
+OBSTACLE_LIDAR_MAX_ROS_DEG = 20.0
+# Print the full per-frame obstacle diagnostic (phase, lane, every gate, trigger
+# reason, far_y value) to the console.  Set False to only log detect/clear.
+OBSTACLE_LOG_EVERY_FRAME = True
 
 # Parallel parking (--mode parking). LiDAR-only, drives the car standalone.
 # Sectors are ROS angles (forward=0, left=+90, right=-90); parked cars are on the right.
@@ -111,6 +117,7 @@ TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.058
 
 # YOLO lane model. Use a lane-trained Ultralytics .pt file, not a generic COCO model.
 YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final_openvino_model"
+# YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final.pt"
 YOLO_DEVICE = "cpu"
 YOLO_IMAGE_SIZE = 640
 YOLO_CONFIDENCE = 0.25
@@ -218,6 +225,41 @@ def read_console_key() -> int:
         msvcrt.getwch()
         return -1
     return ord(key)
+
+
+def _format_obstacle_debug(status: dict) -> str:
+    """One-line dump of every gate the obstacle trigger depends on."""
+
+    def flag(value) -> str:
+        return "T" if value else "F"
+
+    def num(value, fmt: str) -> str:
+        return "NA" if value is None else format(value, fmt)
+
+    sector = status.get("lidar_sector_ros", (None, None))
+    if status.get("use_lidar"):
+        proximity = (
+            f"lidar={num(status.get('lidar_mm'), '.0f')}mm near={flag(status.get('lidar_near'))} "
+            f"sect_ros=({sector[0]},{sector[1]}) thr={num(status.get('lidar_dist_thresh_mm'), '.0f')}"
+        )
+    else:
+        proximity = (
+            f"far_y={num(status.get('car_far_y_ratio'), '.3f')}"
+            f">={num(status.get('camera_trigger_far_y_ratio'), '.3f')}"
+        )
+    return (
+        f"phase={status.get('phase')} active={flag(status.get('active'))} "
+        f"mode={'lidar' if status.get('use_lidar') else 'cam'} "
+        f"lane={status.get('current_lane')} "
+        f"cam={flag(status.get('camera_car'))}(conf={num(status.get('car_conf'), '.2f')}) "
+        f"{proximity} "
+        f"cnt={status.get('trigger_counter')}/{status.get('trigger_frames')} "
+        f"present={flag(status.get('present'))} alert={flag(status.get('alert'))} "
+        f"WHY={status.get('reason')} "
+        f"src={status.get('source_lane')} shift_steer={status.get('shift_steer')} "
+        f"head={num(status.get('heading_deg'), '.1f')} off={num(status.get('offset_norm'), '.2f')} "
+        f"raw={status.get('raw_lane_label', '')!r}"
+    )
 
 
 def apply_obstacle_mission_override(
@@ -390,8 +432,9 @@ def main() -> None:
     lane_detector = build_lane_detector(args)
     lidar_config = LidarConfig(
         port=LIDAR_PORT,
-        front_min_angle_deg=LIDAR_FRONT_MIN_ANGLE_DEG,
-        front_max_angle_deg=LIDAR_FRONT_MAX_ANGLE_DEG,
+        front_min_ros_deg=OBSTACLE_LIDAR_MIN_ROS_DEG,
+        front_max_ros_deg=OBSTACLE_LIDAR_MAX_ROS_DEG,
+        raw_angle_for_ros_zero_deg=LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG,
         stop_distance_mm=LIDAR_STOP_DISTANCE_MM,
         slow_distance_mm=LIDAR_SLOW_DISTANCE_MM,
         min_speed_scale=LIDAR_MIN_SPEED_SCALE,
@@ -402,6 +445,8 @@ def main() -> None:
     obstacle_mission = ContestObstacleMission(
         ContestObstacleMissionConfig(
             enabled=OBSTACLE_MISSION_ENABLED,
+            use_lidar=USE_LIDAR,
+            camera_trigger_far_y_ratio=OBSTACLE_CAMERA_TRIGGER_FAR_Y_RATIO,
             raw_angle_for_ros_zero_deg=LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG,
             lidar_obstacle_distance_mm=OBSTACLE_DISTANCE_MM,
             trigger_frames=OBSTACLE_TRIGGER_FRAMES,
@@ -410,12 +455,9 @@ def main() -> None:
             lane1_shift_steer=OBSTACLE_LANE1_SHIFT_STEER,
             shift_out_duration_s=OBSTACLE_SHIFT_OUT_SECONDS,
             shift_out_steer_weight=OBSTACLE_SHIFT_OUT_STEER_WEIGHT,
-            lane2_pass_steer=OBSTACLE_LANE2_PASS_STEER,
-            lane1_pass_steer=OBSTACLE_LANE1_PASS_STEER,
-            pass_align_heading_deg=OBSTACLE_PASS_ALIGN_HEADING_DEG,
-            pass_align_offset_norm=OBSTACLE_PASS_ALIGN_OFFSET_NORM,
-            pass_max_duration_s=OBSTACLE_PASS_MAX_SECONDS,
             retrigger_cooldown_s=OBSTACLE_RETRIGGER_COOLDOWN_SECONDS,
+            lidar_min_ros_deg=OBSTACLE_LIDAR_MIN_ROS_DEG,
+            lidar_max_ros_deg=OBSTACLE_LIDAR_MAX_ROS_DEG,
         )
     )
     parking_mission = ParkingHardMission(
@@ -464,6 +506,7 @@ def main() -> None:
     fps = 0.0
     last_time = time.perf_counter()
     drive_started = not motor_enabled
+    prev_obstacle_detected = False
 
     try:
         motor.open()
@@ -533,6 +576,7 @@ def main() -> None:
                             objects=lane.objects,
                             current_lane=lane.lane_label or lane.lane_pair_label,
                             frame_width=lane.annotated.shape[1],
+                            frame_height=lane.annotated.shape[0],
                             lidar_scan=last_lidar_scan,
                             heading_deg=lane.heading_deg,
                             offset_norm=lane.offset_norm,
@@ -544,6 +588,23 @@ def main() -> None:
                 command = DriveCommand(steer=0, speed=0, reason="waiting_for_start")
             motor.send(command.steer, command.speed if motor_enabled else 0)
 
+            # Obstacle-detection telemetry for the UI alert, the console, and the
+            # log.  Only meaningful in auto mode where the mission runs.
+            obstacle_detected = args.mode == "auto" and obstacle_mission.obstacle_alert
+            obstacle_status = None
+            if args.mode == "auto":
+                obstacle_status = obstacle_mission.debug_status()
+                obstacle_status["detected"] = obstacle_detected
+                obstacle_status["raw_lane_label"] = lane.lane_label or lane.lane_pair_label
+                debug_line = _format_obstacle_debug(obstacle_status)
+                if obstacle_detected and not prev_obstacle_detected:
+                    print(f"[OBSTACLE] DETECTED frame={frame_count} {debug_line}", flush=True)
+                elif not obstacle_detected and prev_obstacle_detected:
+                    print(f"[OBSTACLE] CLEARED  frame={frame_count} {debug_line}", flush=True)
+                if OBSTACLE_LOG_EVERY_FRAME:
+                    print(f"[OBS] f={frame_count} {debug_line}", flush=True)
+            prev_obstacle_detected = obstacle_detected
+
             now = time.perf_counter()
             elapsed = now - last_time
             last_time = now
@@ -552,16 +613,17 @@ def main() -> None:
             if frame_count % PRINT_EVERY_N_FRAMES == 0:
                 print(
                     f"frame={frame_count} fps={fps:.1f} conf={lane_for_control.confidence:.2f} "
-                    f"steer={command.steer:+d} speed={command.speed:+d} reason={command.reason}",
+                    f"steer={command.steer:+d} speed={command.speed:+d} reason={command.reason} "
+                    f"obstacle={'!' if obstacle_detected else '-'}",
                     flush=True,
                 )
 
-            logger.log(frame, args.mode, args.backend, lane_for_control, safety, command)
+            logger.log(frame, args.mode, args.backend, lane_for_control, safety, command, obstacle_status)
 
             key = -1
             if display_enabled:
                 display = lane_for_control.annotated
-                draw_status(display, lane_for_control, safety, command, args.mode, args.backend, fps, motor_enabled)
+                draw_status(display, lane_for_control, safety, command, args.mode, args.backend, fps, motor_enabled, obstacle_detected)
                 cv2.imshow("CTRL_ZERO", display)
                 if SHOW_MASK_WINDOW and lane_for_control.mask is not None:
                     cv2.imshow("CTRL_ZERO lane mask", lane_for_control.mask)

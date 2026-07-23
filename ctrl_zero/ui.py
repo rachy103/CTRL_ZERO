@@ -18,6 +18,7 @@ def draw_status(
     backend: str,
     fps: float,
     motor_enabled: bool,
+    obstacle_detected: bool = False,
 ) -> None:
     lidar_text = "off"
     if obstacle is not None:
@@ -48,3 +49,20 @@ def draw_status(
     for text in lines:
         cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 0, 0), 3, cv2.LINE_AA)
         y += 24
+
+    if obstacle_detected:
+        _draw_obstacle_alert(frame)
+
+
+def _draw_obstacle_alert(frame) -> None:
+    """Red '!' badge in the top-right corner while an obstacle is detected."""
+    h, w = frame.shape[:2]
+    cx, cy, radius = w - 42, 42, 26
+    cv2.circle(frame, (cx, cy), radius, (0, 0, 255), -1)
+    cv2.circle(frame, (cx, cy), radius, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(frame, "!", (cx - 8, cy + 13), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 3, cv2.LINE_AA)
+    label = "OBSTACLE"
+    (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+    lx = w - tw - 10
+    cv2.putText(frame, label, (lx, cy + radius + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(frame, label, (lx, cy + radius + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)

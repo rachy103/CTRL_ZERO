@@ -139,7 +139,11 @@ class YOLOLaneDetector:
             "iou": self.config.iou,
             "device": self.config.device,
             "verbose": False,
-            "retina_masks": False,
+            # retina_masks=False must not be used with a static 640x640 export:
+            # masks then come back in letterboxed input space and the naive
+            # resize in _class_masks squashes the padding into the frame,
+            # shifting every mask vertically. True lets Ultralytics unpad.
+            "retina_masks": True,
         }
         allowed_class_ids = self._allowed_class_ids(getattr(self.model, "names", None))
         if allowed_class_ids is not None:
@@ -697,7 +701,12 @@ class YOLOLaneDetector:
             from ultralytics import YOLO
         except ModuleNotFoundError as exc:
             raise RuntimeError("ultralytics is required for YOLO backend. Run: python -m pip install -r requirements.txt") from exc
-        return YOLO(str(model_path))
+        if model_path.suffix.lower() == ".pt":
+            return YOLO(str(model_path))
+        # Exported formats (OpenVINO dir, .onnx, ...) don't carry the task in a
+        # way Ultralytics can always guess; a wrong "detect" guess silently
+        # drops segmentation masks, so declare the task explicitly.
+        return YOLO(str(model_path), task="segment")
 
     def _extract_lanes(self, result, height: int, width: int) -> list[list[Point]]:
         lanes = self._extract_mask_lanes(result, height, width)

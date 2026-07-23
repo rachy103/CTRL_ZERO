@@ -26,12 +26,14 @@ def test_angle_range_wraps_across_zero_degrees():
 
 def test_obstacle_never_stops_or_slows():
     # Stop and slowdown are removed: even a very close obstacle leaves speed at
-    # full scale, while still reporting the measured distance.
+    # full scale, while still reporting the measured distance.  The front sector
+    # is ROS +/-25 (forward), so the raw-90 (left) point is excluded and the
+    # forward raw-180 point is what gets reported.
     scan = np.array([[90.0, 100.0], [180.0, 200.0]], dtype=np.float32)
     decision = analyze_obstacles(scan, LidarConfig())
     assert not decision.should_stop
     assert decision.speed_scale == 1.0
-    assert decision.nearest_front_mm == 100.0
+    assert decision.nearest_front_mm == 200.0
 
 
 def test_ros_sector_conversion_matches_original_rplidar_driver_orientation():

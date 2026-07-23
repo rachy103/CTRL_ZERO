@@ -86,6 +86,18 @@ class DriveLogger:
                 "object_count",
                 "car_count",
                 "traffic_light_count",
+                "obstacle_detected",
+                "obstacle_present",
+                "obstacle_reason",
+                "obstacle_current_lane",
+                "obstacle_camera_car",
+                "obstacle_car_conf",
+                "obstacle_car_far_y_ratio",
+                "obstacle_lidar_near",
+                "obstacle_lidar_mm",
+                "obstacle_lidar_sector_ros",
+                "obstacle_trigger_counter",
+                "obstacle_phase",
                 "safety_reason",
                 "safety_should_stop",
                 "safety_speed_scale",
@@ -163,6 +175,7 @@ class DriveLogger:
         lane: LaneDetection,
         obstacle: ObstacleDecision | SafetyDecision | None,
         command: DriveCommand,
+        obstacle_status: dict[str, Any] | None = None,
     ) -> None:
         if not self.config.enabled or self.writer is None:
             return
@@ -219,6 +232,18 @@ class DriveLogger:
                 "object_count": len(objects),
                 "car_count": car_count,
                 "traffic_light_count": traffic_light_count,
+                "obstacle_detected": "" if obstacle_status is None else bool(obstacle_status.get("detected", False)),
+                "obstacle_present": "" if obstacle_status is None else bool(obstacle_status.get("present", False)),
+                "obstacle_reason": "" if obstacle_status is None else obstacle_status.get("reason", ""),
+                "obstacle_current_lane": "" if obstacle_status is None else obstacle_status.get("current_lane", ""),
+                "obstacle_camera_car": "" if obstacle_status is None else bool(obstacle_status.get("camera_car", False)),
+                "obstacle_car_conf": "" if obstacle_status is None or obstacle_status.get("car_conf") is None else f"{obstacle_status['car_conf']:.3f}",
+                "obstacle_car_far_y_ratio": "" if obstacle_status is None or obstacle_status.get("car_far_y_ratio") is None else f"{obstacle_status['car_far_y_ratio']:.5f}",
+                "obstacle_lidar_near": "" if obstacle_status is None else bool(obstacle_status.get("lidar_near", False)),
+                "obstacle_lidar_mm": "" if obstacle_status is None or obstacle_status.get("lidar_mm") is None else f"{obstacle_status['lidar_mm']:.1f}",
+                "obstacle_lidar_sector_ros": "" if obstacle_status is None else str(obstacle_status.get("lidar_sector_ros", "")),
+                "obstacle_trigger_counter": "" if obstacle_status is None else obstacle_status.get("trigger_counter", ""),
+                "obstacle_phase": "" if obstacle_status is None else obstacle_status.get("phase", ""),
                 "safety_reason": _obstacle_reason(obstacle),
                 "safety_should_stop": "" if obstacle is None else bool(getattr(obstacle, "should_stop", False)),
                 "safety_speed_scale": "" if obstacle is None else f"{getattr(obstacle, 'speed_scale', 1.0):.3f}",
@@ -240,7 +265,7 @@ class DriveLogger:
         )
         self._write_objects(timestamp, timestamp_iso, objects, frame_area, frame_height, vision_obstacle)
         self._write_lane_references(timestamp, timestamp_iso, lane)
-        self._write_jsonl(timestamp, timestamp_iso, mode, backend, lane, obstacle, command, image_file, annotated_file, mask_file)
+        self._write_jsonl(timestamp, timestamp_iso, mode, backend, lane, obstacle, command, image_file, annotated_file, mask_file, obstacle_status)
         self._flush()
 
     def close(self) -> None:
@@ -362,6 +387,7 @@ class DriveLogger:
         image_file: str,
         annotated_file: str,
         mask_file: str,
+        obstacle_status: dict[str, Any] | None = None,
     ) -> None:
         if self.jsonl_file is None:
             return
@@ -374,6 +400,7 @@ class DriveLogger:
             "lane": _lane_to_dict(lane),
             "objects": [_object_to_dict(obj, lane.annotated.shape) for obj in lane.objects],
             "safety": _safety_to_dict(obstacle),
+            "obstacle": obstacle_status,
             "command": {"steer": command.steer, "speed": command.speed, "reason": command.reason},
             "files": {"image": image_file, "annotated": annotated_file, "mask": mask_file},
         }

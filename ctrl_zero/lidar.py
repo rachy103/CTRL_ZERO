@@ -14,8 +14,13 @@ class LidarConfig:
     max_buffer_size: int = 3000
     sample_rate: int = 10
     min_distance_mm: float = 0.0
-    front_min_angle_deg: float = 87.5
-    front_max_angle_deg: float = 92.5
+    # Front sector for the reported nearest range, in ROS angles (forward=0,
+    # left=+, right=-).  Kept identical to the obstacle-avoidance sector so the
+    # UI/log distance reflects the exact wedge the trigger uses.
+    # ROS = raw_angle_for_ros_zero_deg - raw_angle.
+    front_min_ros_deg: float = -25.0
+    front_max_ros_deg: float = 25.0
+    raw_angle_for_ros_zero_deg: float = 180.0
     # Unused: front-LiDAR stop and slowdown were removed, so these no longer
     # affect speed.  Kept only so existing configs/tests keep constructing.
     stop_distance_mm: float = 450.0
@@ -412,18 +417,29 @@ def analyze_obstacles(scan: np.ndarray | None, config: LidarConfig) -> ObstacleD
     if scan is None or len(scan) == 0:
         return ObstacleDecision.clear()
 
-    front = angle_range(scan, config.front_min_angle_deg, config.front_max_angle_deg)
+    # Same ROS front sector as the obstacle-avoidance mission, so the reported
+    # nearest range always matches the wedge the trigger looks at.
+    front = ros_angle_range(
+        scan,
+        config.front_min_ros_deg,
+        config.front_max_ros_deg,
+        config.raw_angle_for_ros_zero_deg,
+    )
     if len(front) == 0:
         return ObstacleDecision.clear()
 
-    nearest = float(np.min(front[:, 1]))
-    # LiDAR stopping AND slowdown are both intentionally removed: obstacles are
-    # handled by the lane-change mission, so the front LiDAR never alters speed.
-    # The measured distance is still reported for logging/UI, but the car always
-    # runs at full speed (speed_scale=1.0, should_stop=False).
+    distances = front[:, 1]
+    valid = distances[np.isfinite(distances) & (distances > 0.0)]
+    if len(valid) == 0:
+        return ObstacleDecision.clear()
+
+    # nearest = minimum range ANYWHERE in the sector (not the dead-ahead point).
+    # LiDAR stop/slow are intentionally removed: the mission handles obstacles,
+    # so this only reports distance and never alters speed.
+    nearest = float(np.min(valid))
     return ObstacleDecision(
         nearest_front_mm=nearest,
         speed_scale=1.0,
         should_stop=False,
-        front_points=len(front),
+        front_points=int(len(valid)),
     )

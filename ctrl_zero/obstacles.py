@@ -28,14 +28,14 @@ class VisionObstacleConfig:
     lane_change_enabled: bool = True
     lane_change_area_ratio: float = 0.060
     avoidance_steer_weight: float = 1.0
-    avoidance_steer_limit: float = 80.0
+    avoidance_steer_limit: float = 100.0
     lane_change_path_progress_step: float = 0.12
     lane_change_path_lookahead_progress: float = 0.35
     lane_change_complete_offset_norm: float = 0.12
     lane_change_complete_frames: int = 2
     corridor_width_ratio: float = 0.45
     corridor_margin_ratio: float = 0.08
-    far_y_ratio: float = 0.10
+    far_y_ratio: float = 0.0
 
 
 @dataclass
@@ -67,13 +67,21 @@ class LaneChangeState:
 class ContestObstaclePhase(str, Enum):
     LANE_FOLLOW = "lane_follow"
     AVOID_SHIFT_OUT = "avoid_shift_out"
-    AVOID_PASS = "avoid_pass"
 
 
 @dataclass(frozen=True)
 class ContestObstacleMissionConfig:
     enabled: bool = True
     camera_min_confidence: float = 0.50
+    # Avoidance proximity source, selectable:
+    #   use_lidar=True  -> proximity from the LiDAR front sector (lidar_* below)
+    #   use_lidar=False -> proximity from the camera alone, using the car bbox
+    #                      bottom edge (far_y).  A closer car sits lower in the
+    #                      frame, so trigger once far_y / frame_height reaches
+    #                      camera_trigger_far_y_ratio.  0.0 = any central car of
+    #                      sufficient confidence triggers immediately.
+    use_lidar: bool = True
+    camera_trigger_far_y_ratio: float = 0.55
     lidar_obstacle_distance_mm: float = 1000.0
     lidar_min_ros_deg: float = -10.0
     lidar_max_ros_deg: float = 10.0
@@ -86,20 +94,9 @@ class ContestObstacleMissionConfig:
     # The shift-out phase runs longer when the car is already steered hard at
     # detection: duration = shift_out_duration_s + |steer_at_detection| * weight.
     shift_out_steer_weight: float = 0.0
-    # Pass phase counter-steers opposite the shift (per lane) until the car's
-    # heading matches the new lane's centerline, instead of driving straight or
-    # counter-steering for a fixed time.  Defaults are the negatives of the
-    # shift steers.
-    lane2_pass_steer: int = 60
-    lane1_pass_steer: int = -60
-    # Counter-steer ends only when the car matches the new lane centerline in
-    # BOTH heading and lateral position: |heading| <= pass_align_heading_deg AND
-    # |offset_norm| <= pass_align_offset_norm (offset_norm is 0 at lane center).
-    # pass_max_duration_s is a safety cap so a lost lane never leaves the car
-    # counter-steering forever.
-    pass_align_heading_deg: float = 5.0
-    pass_align_offset_norm: float = 0.15
-    pass_max_duration_s: float = 2.0
+    # After the shift-out finishes the mission hands straight back to the lane
+    # follower (there is no counter-steer "pass" phase).  A car still dead ahead
+    # re-chains another shift-out instead of returning control for one frame.
     retrigger_cooldown_s: float = 1.0
 
 @dataclass(frozen=True)
@@ -140,6 +137,7 @@ class ContestObstacleMission:
         self.active_shift_steer = 0
         self.active_shift_out_duration_s = float(self.config.shift_out_duration_s)
         self.latest_lidar_range_mm: float | None = None
+        self.latest_frame_height: int | None = None
         self.latest_heading_deg: float | None = None
         self.latest_offset_norm: float | None = None
         self.latest_lane_follow_steer = 0
@@ -161,6 +159,72 @@ class ContestObstacleMission:
     def ignoring_obstacles(self) -> bool:
         return self.active
 
+    @property
+    def camera_sees_car(self) -> bool:
+        return self.last_car.detected
+
+    @property
+    def lidar_is_near(self) -> bool:
+        return self._lidar_is_near()
+
+    @property
+    def obstacle_present(self) -> bool:
+        return self._obstacle_present()
+
+    @property
+    def obstacle_alert(self) -> bool:
+        # True while the mission is actively avoiding OR currently senses an
+        # obstacle (central camera car AND a near LiDAR return).  Drives the UI
+        # alert and the obstacle-detection log columns.
+        return self.active or self._obstacle_present()
+
+    def present_reason(self) -> str:
+        # Human-readable explanation of why _obstacle_present() is / is not True,
+        # naming the FIRST failing gate in the order the checks are evaluated.
+        if self.current_lane not in (1, 2):
+            return f"no_lane(current_lane={self.current_lane})"
+        if not self.last_car.detected:
+            return "no_camera_car"
+        if self.config.use_lidar:
+            if not self._lidar_is_near():
+                mm = self.latest_lidar_range_mm
+                if mm is None:
+                    return "no_lidar_return_in_sector"
+                return f"lidar_far({mm:.0f}>{self.config.lidar_obstacle_distance_mm:.0f})"
+            return "present"
+        if not self._camera_is_near():
+            return f"car_too_far(far_y={self._car_far_y_ratio():.3f}<{self.config.camera_trigger_far_y_ratio:.3f})"
+        return "present"
+
+    def debug_status(self) -> dict[str, object]:
+        # Full snapshot of every input and gate the trigger depends on, for the
+        # console and the CSV.  Read this to see exactly why a frame did or did
+        # not fire an avoidance.
+        car = self.last_car
+        return {
+            "phase": self.phase.value,
+            "active": self.active,
+            "current_lane": self.current_lane,
+            "use_lidar": self.config.use_lidar,
+            "camera_car": car.detected,
+            "car_far_y_ratio": self._car_far_y_ratio(),
+            "camera_trigger_far_y_ratio": self.config.camera_trigger_far_y_ratio,
+            "car_conf": None if car.obj is None else float(car.obj.confidence),
+            "lidar_near": self._lidar_is_near(),
+            "lidar_mm": self.latest_lidar_range_mm,
+            "lidar_sector_ros": (self.config.lidar_min_ros_deg, self.config.lidar_max_ros_deg),
+            "lidar_dist_thresh_mm": self.config.lidar_obstacle_distance_mm,
+            "trigger_counter": self.trigger_counter,
+            "trigger_frames": self.config.trigger_frames,
+            "present": self._obstacle_present(),
+            "alert": self.obstacle_alert,
+            "reason": self.present_reason(),
+            "source_lane": self.avoidance_source_lane,
+            "shift_steer": self.active_shift_steer,
+            "heading_deg": self.latest_heading_deg,
+            "offset_norm": self.latest_offset_norm,
+        }
+
     def step(
         self,
         *,
@@ -168,6 +232,7 @@ class ContestObstacleMission:
         current_lane: int | str | None,
         frame_width: int,
         lidar_scan: np.ndarray | None,
+        frame_height: int | None = None,
         heading_deg: float | None = None,
         offset_norm: float | None = None,
         lane_follow_steer: int = 0,
@@ -181,7 +246,8 @@ class ContestObstacleMission:
         self.latest_heading_deg = heading_deg
         self.latest_offset_norm = offset_norm
         self.latest_lane_follow_steer = int(lane_follow_steer)
-        self.latest_lidar_range_mm = self._lidar_range(lidar_scan)
+        self.latest_lidar_range_mm = self._lidar_range(lidar_scan) if self.config.use_lidar else None
+        self.latest_frame_height = int(frame_height) if frame_height else None
         self.last_car = detect_contest_car(objects, frame_width, self.config.camera_min_confidence)
         if cruise_speed is not None:
             self.cruise_speed = int(cruise_speed)
@@ -214,14 +280,29 @@ class ContestObstacleMission:
         return self._begin_shift_out(now_s)
 
     def _obstacle_present(self) -> bool:
-        # A car in the central camera region with a near LiDAR return straight
-        # ahead, in a known lane.  This is the trigger condition without the
-        # consecutive-frame counter.
-        return (
-            self.current_lane in (1, 2)
-            and self.last_car.detected
-            and self._lidar_is_near()
-        )
+        # A car in the central camera region, in a known lane, that is close
+        # enough.  Proximity comes from the LiDAR when use_lidar is True, or from
+        # the camera bbox far_y when False.  Without the consecutive-frame counter.
+        if self.current_lane not in (1, 2) or not self.last_car.detected:
+            return False
+        if self.config.use_lidar:
+            return self._lidar_is_near()
+        return self._camera_is_near()
+
+    def _camera_is_near(self) -> bool:
+        # Camera-only proximity proxy: the detected car's bbox bottom edge (far_y)
+        # must sit at or below camera_trigger_far_y_ratio of the frame height.  A
+        # closer car sits lower in the frame, so a larger ratio means nearer.  A 0
+        # threshold (or missing frame height) means any detected central car counts.
+        threshold = self.config.camera_trigger_far_y_ratio
+        if threshold <= 0.0 or self.latest_frame_height is None or self.latest_frame_height <= 0:
+            return True
+        return self._car_far_y_ratio() >= threshold
+
+    def _car_far_y_ratio(self) -> float:
+        if self.last_car.obj is None or self.latest_frame_height is None or self.latest_frame_height <= 0:
+            return 0.0
+        return self.last_car.obj.bbox.bottom_y / float(self.latest_frame_height)
 
     def _begin_shift_out(self, now_s: float) -> DriveCommand:
         self.trigger_counter = 0
@@ -247,13 +328,9 @@ class ContestObstacleMission:
             duration = max(0.0, self.active_shift_out_duration_s)
             if now_s - self.phase_started_s < duration:
                 return self._command(self.active_shift_steer, "obstacle_avoid_shift_out")
-            self.phase = ContestObstaclePhase.AVOID_PASS
-            self.phase_started_s += duration
-
-        if self.phase == ContestObstaclePhase.AVOID_PASS:
-            timed_out = now_s - self.phase_started_s >= max(0.0, self.config.pass_max_duration_s)
-            if not (self._aligned_with_target_lane() or timed_out):
-                return self._command(self._pass_steer(), "obstacle_avoid_pass")
+            # Shift-out done: no counter-steer pass phase.  Hand straight back to
+            # the lane follower, or re-chain a fresh shift-out if a car is still
+            # dead ahead in the lane we just entered.
             return self._finish_or_rechain(now_s)
         return None
 
@@ -267,37 +344,6 @@ class ContestObstacleMission:
             return self._begin_shift_out(now_s)
         self._finish_avoidance(now_s)
         return None
-
-    def _pass_steer(self) -> int:
-        # Counter-steer opposite the shift, selected by the lane the maneuver
-        # started from (locked in avoidance_source_lane, not the live detection).
-        return (
-            self.config.lane2_pass_steer
-            if self.avoidance_source_lane == 2
-            else self.config.lane1_pass_steer
-        )
-
-    def _target_lane(self) -> int | None:
-        # The lane we are shifting into: the opposite of the source lane.
-        if self.avoidance_source_lane == 2:
-            return 1
-        if self.avoidance_source_lane == 1:
-            return 2
-        return None
-
-    def _aligned_with_target_lane(self) -> bool:
-        # Counter-steering ends once vision reports we are in the target lane and
-        # the car matches its centerline in BOTH heading and lateral position:
-        # heading within the angle threshold and offset within the position
-        # threshold.  A missing reading counts as not-yet-aligned.
-        if self.current_lane != self._target_lane():
-            return False
-        if self.latest_heading_deg is None or self.latest_offset_norm is None:
-            return False
-        return (
-            abs(self.latest_heading_deg) <= abs(self.config.pass_align_heading_deg)
-            and abs(self.latest_offset_norm) <= abs(self.config.pass_align_offset_norm)
-        )
 
     def _finish_avoidance(self, now_s: float) -> None:
         # After the counter-steer pass phase there is no further steering back to

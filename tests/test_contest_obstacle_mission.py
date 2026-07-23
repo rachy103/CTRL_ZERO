@@ -15,6 +15,7 @@ from main import apply_obstacle_mission_override
 
 
 FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
 
 
 def car_with_area(area: float, center_x: float = 320.0) -> DetectedObject:
@@ -52,6 +53,7 @@ def step(
         objects=objects,
         current_lane=f"lane{lane}" if lane is not None else None,
         frame_width=FRAME_WIDTH,
+        frame_height=FRAME_HEIGHT,
         lidar_scan=scan,
         heading_deg=heading_deg,
         offset_norm=offset_norm,
@@ -67,11 +69,6 @@ def timed_config(**overrides) -> ContestObstacleMissionConfig:
         "lane2_shift_steer": -60,
         "lane1_shift_steer": 60,
         "shift_out_duration_s": 0.70,
-        "lane2_pass_steer": 60,
-        "lane1_pass_steer": -60,
-        "pass_align_heading_deg": 5.0,
-        "pass_align_offset_norm": 0.15,
-        "pass_max_duration_s": 0.50,
         "retrigger_cooldown_s": 1.0,
     }
     values.update(overrides)
@@ -127,26 +124,18 @@ def test_trigger_counter_requires_consecutive_camera_and_lidar_agreement():
     assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
 
 
-def test_lane2_avoidance_shifts_left_then_counter_steers_right_on_pass():
+def test_lane2_avoidance_shifts_left_then_returns_to_lane_follow():
     mission = ContestObstacleMission(timed_config(retrigger_cooldown_s=0.0))
     car = [car_with_area(6000.0)]
 
-    commands = [step(mission, now_s=10.0, scan=forward_scan(900.0), objects=car)]
-    commands.append(step(mission, now_s=10.69, scan=None, objects=[]))
-    commands.append(step(mission, now_s=10.71, scan=None, objects=[]))
-    commands.append(step(mission, now_s=11.19, scan=None, objects=[]))
+    start = step(mission, now_s=10.0, scan=forward_scan(900.0), objects=car)
+    mid = step(mission, now_s=10.69, scan=None, objects=[])
+    finished = step(mission, now_s=10.71, scan=None, objects=[])
 
-    assert [command.reason for command in commands if command is not None] == [
-        "obstacle_avoid_shift_out",
-        "obstacle_avoid_shift_out",
-        "obstacle_avoid_pass",
-        "obstacle_avoid_pass",
-    ]
-    # Shift left (-60), then counter-steer right (+60) during the pass.
-    assert [command.steer for command in commands if command is not None] == [-60, -60, 60, 60]
-
-    finished = step(mission, now_s=11.21, scan=None, objects=[])
-
+    # Shift left (-60) for the whole shift-out window, then hand straight back to
+    # the lane follower (no counter-steer pass phase).
+    assert start == DriveCommand(-60, 255, "obstacle_avoid_shift_out")
+    assert mid == DriveCommand(-60, 255, "obstacle_avoid_shift_out")
     assert finished is None
     assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
     assert not mission.active
@@ -155,13 +144,13 @@ def test_lane2_avoidance_shifts_left_then_counter_steers_right_on_pass():
     assert apply_obstacle_mission_override(base, finished, SafetyDecision.clear()) is base
 
 
-def test_lane1_avoidance_shifts_right_and_locks_direction_until_pass():
+def test_lane1_avoidance_shifts_right_and_locks_direction():
     mission = ContestObstacleMission(timed_config())
     car = [car_with_area(6000.0)]
 
     start = step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=1)
     # The detector may report lane 2 mid-maneuver, but the direction selected
-    # from the source lane must remain locked until the pass phase.
+    # from the source lane must remain locked for the whole shift-out.
     active = step(mission, now_s=0.3, scan=None, objects=[], lane=2)
 
     assert start == DriveCommand(60, 255, "obstacle_avoid_shift_out")
@@ -169,63 +158,14 @@ def test_lane1_avoidance_shifts_right_and_locks_direction_until_pass():
     assert mission.avoidance_source_lane == 1
 
 
-def test_lane1_avoidance_counter_steers_left_on_pass():
-    mission = ContestObstacleMission(timed_config(retrigger_cooldown_s=0.0))
+def test_shift_out_steer_ignores_max_steer_and_follows_tuned_value():
+    # Tuned shift steer beyond the usual MAX_STEER (80) is emitted verbatim.
+    mission = ContestObstacleMission(timed_config(lane2_shift_steer=-100, retrigger_cooldown_s=0.0))
     car = [car_with_area(6000.0)]
 
-    shift = step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=1)
-    # Enter the pass phase (after shift_out_duration_s = 0.70).
-    passing = step(mission, now_s=0.71, scan=None, objects=[], lane=1)
+    start = step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2)
 
-    assert shift == DriveCommand(60, 255, "obstacle_avoid_shift_out")
-    # Shift right (+60), then counter-steer left (-60) during the pass.
-    assert passing == DriveCommand(-60, 255, "obstacle_avoid_pass")
-
-
-def test_pass_ends_when_heading_and_position_align_with_new_lane_before_timeout():
-    # Long safety cap so the closed-loop alignment, not the timeout, ends the
-    # pass.  Source lane 2 -> target lane 1.
-    mission = ContestObstacleMission(
-        timed_config(
-            pass_max_duration_s=5.0,
-            pass_align_heading_deg=5.0,
-            pass_align_offset_norm=0.15,
-            retrigger_cooldown_s=0.0,
-        )
-    )
-    car = [car_with_area(6000.0)]
-
-    step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2)
-
-    # In the new lane (1) but still angled -> keep counter-steering.
-    still_angled = step(mission, now_s=0.71, scan=None, objects=[], lane=1, heading_deg=20.0, offset_norm=0.05)
-    assert still_angled == DriveCommand(60, 255, "obstacle_avoid_pass")
-    assert mission.phase == ContestObstaclePhase.AVOID_PASS
-
-    # Heading now aligned but still off-center -> NOT done, keep counter-steering.
-    off_center = step(mission, now_s=0.85, scan=None, objects=[], lane=1, heading_deg=2.0, offset_norm=0.40)
-    assert off_center == DriveCommand(60, 255, "obstacle_avoid_pass")
-    assert mission.phase == ContestObstaclePhase.AVOID_PASS
-
-    # Heading AND position both matched -> finish well before the 5s cap.
-    aligned = step(mission, now_s=0.9, scan=None, objects=[], lane=1, heading_deg=2.0, offset_norm=0.05)
-    assert aligned is None
-    assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
-
-
-def test_pass_does_not_end_on_alignment_while_still_in_source_lane():
-    # Heading is 0 but we are still detected in the source lane -> not aligned
-    # with the *new* lane yet, so counter-steering continues.
-    mission = ContestObstacleMission(
-        timed_config(pass_max_duration_s=5.0, pass_align_heading_deg=5.0, retrigger_cooldown_s=0.0)
-    )
-    car = [car_with_area(6000.0)]
-
-    step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2)
-    still_passing = step(mission, now_s=0.71, scan=None, objects=[], lane=2, heading_deg=0.0)
-
-    assert still_passing == DriveCommand(60, 255, "obstacle_avoid_pass")
-    assert mission.phase == ContestObstaclePhase.AVOID_PASS
+    assert start == DriveCommand(-100, 255, "obstacle_avoid_shift_out")
 
 
 def test_avoidance_ignores_new_detections_and_keeps_runtime_max_speed():
@@ -240,19 +180,20 @@ def test_avoidance_ignores_new_detections_and_keeps_runtime_max_speed():
     assert active == DriveCommand(-60, 235, "obstacle_avoid_shift_out")
 
 
-def test_next_obstacle_can_trigger_after_timed_mode_and_cooldown():
+def test_next_obstacle_can_trigger_after_shift_out_and_cooldown():
     mission = ContestObstacleMission(
-        timed_config(shift_out_duration_s=0.10, pass_max_duration_s=0.10, retrigger_cooldown_s=1.0)
+        timed_config(shift_out_duration_s=0.10, retrigger_cooldown_s=1.0)
     )
     car = [car_with_area(6000.0)]
 
     assert step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car) is not None
-    assert step(mission, now_s=0.1, scan=None, objects=[]) is not None
-    assert step(mission, now_s=0.21, scan=None, objects=[]) is None
+    # Shift-out ends at 0.10; clear ahead -> finish, cooldown until 0.11 + 1.0.
+    assert step(mission, now_s=0.11, scan=None, objects=[]) is None
     assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
 
-    assert step(mission, now_s=1.20, scan=forward_scan(900.0), objects=car, lane=1) is None
-    second = step(mission, now_s=1.21, scan=forward_scan(900.0), objects=car, lane=1)
+    # Still inside the cooldown window -> blocked.
+    assert step(mission, now_s=1.10, scan=forward_scan(900.0), objects=car, lane=1) is None
+    second = step(mission, now_s=1.20, scan=forward_scan(900.0), objects=car, lane=1)
 
     assert second == DriveCommand(60, 255, "obstacle_avoid_shift_out")
     assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
@@ -268,58 +209,89 @@ def test_shift_out_duration_grows_with_steering_at_detection():
     start = step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2, lane_follow_steer=-80)
     assert start.reason == "obstacle_avoid_shift_out"
 
-    # Still shifting at 0.89s (would already be in the pass phase without the weight).
+    # Still shifting at 0.89s (would already have finished without the weight).
     mid = step(mission, now_s=0.89, scan=None, objects=[], lane=2)
     assert mid.reason == "obstacle_avoid_shift_out"
 
-    # After 0.90s the shift-out ends and the pass (counter-steer) begins.
+    # After 0.90s the shift-out ends and, with nothing ahead, control returns.
     after = step(mission, now_s=0.91, scan=None, objects=[], lane=2)
-    assert after.reason == "obstacle_avoid_pass"
+    assert after is None
+    assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
 
 
-def test_avoidance_steer_ignores_max_steer_and_follows_tuned_value():
-    # Tuned pass steer beyond the usual MAX_STEER (80) is emitted verbatim.
-    mission = ContestObstacleMission(
-        timed_config(lane2_pass_steer=100, pass_max_duration_s=0.50, retrigger_cooldown_s=0.0)
-    )
+def test_shift_out_completion_rechains_when_obstacle_still_ahead():
+    # No lane-follow gap between consecutive obstacles: when the shift-out
+    # completes with a car still ahead, avoidance chains straight into a new
+    # shift-out from the lane just entered.
+    mission = ContestObstacleMission(timed_config(retrigger_cooldown_s=0.0))
     car = [car_with_area(6000.0)]
 
     step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2)
-    passing = step(mission, now_s=0.71, scan=None, objects=[], lane=2)
-
-    assert passing == DriveCommand(100, 255, "obstacle_avoid_pass")
-
-
-def test_pass_completion_rechains_shift_out_when_obstacle_still_ahead():
-    # No lane-follow gap between consecutive obstacles: when the pass completes
-    # with a car still ahead, avoidance chains straight into a new shift-out.
-    mission = ContestObstacleMission(
-        timed_config(pass_max_duration_s=0.50, retrigger_cooldown_s=0.0)
-    )
-    car = [car_with_area(6000.0)]
-
-    step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2)
-    # Shift-out (0.70) + pass cap (0.50) elapsed, and a car is still ahead in the
-    # new lane (1) -> immediately re-shift from lane 1 (steer +60), no "contest".
-    rechained = step(mission, now_s=1.21, scan=forward_scan(900.0), objects=car, lane=1)
+    # Shift-out (0.70) elapsed and a car is still ahead in the new lane (1) ->
+    # immediately re-shift from lane 1 (steer +60), no "contest" frame.
+    rechained = step(mission, now_s=0.71, scan=forward_scan(900.0), objects=car, lane=1)
 
     assert rechained == DriveCommand(60, 255, "obstacle_avoid_shift_out")
     assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
     assert mission.avoidance_source_lane == 1
 
 
-def test_pass_completion_returns_to_lane_follow_when_clear():
-    mission = ContestObstacleMission(
-        timed_config(pass_max_duration_s=0.50, retrigger_cooldown_s=0.0)
-    )
+def test_shift_out_completion_returns_to_lane_follow_when_clear():
+    mission = ContestObstacleMission(timed_config(retrigger_cooldown_s=0.0))
     car = [car_with_area(6000.0)]
 
     step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2)
-    # Pass completes with nothing ahead -> hand back to the lane follower.
-    cleared = step(mission, now_s=1.21, scan=None, objects=[], lane=1)
+    # Shift-out completes with nothing ahead -> hand back to the lane follower.
+    cleared = step(mission, now_s=0.71, scan=None, objects=[], lane=1)
 
     assert cleared is None
     assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
+
+
+def test_camera_only_trigger_uses_bbox_far_y_without_lidar():
+    # use_lidar=False: no scan, proximity comes from the car bbox bottom edge.
+    # car_with_area(area) has bbox y from 20 to 20+area/50, so bottom_y = 20+h.
+    # Frame height 480.  far_y ratio = bottom_y / 480.
+    mission = ContestObstacleMission(
+        ContestObstacleMissionConfig(
+            use_lidar=False, trigger_frames=1, camera_trigger_far_y_ratio=0.55
+        )
+    )
+
+    # bottom_y = 20 + 6000/50 = 140 -> ratio 0.29 < 0.55 -> too far, no trigger.
+    assert step(mission, now_s=0.0, scan=None, objects=[car_with_area(6000.0)]) is None
+    assert mission.present_reason().startswith("car_too_far")
+
+    # bottom_y = 20 + 20000/50 = 420 -> ratio 0.875 >= 0.55 -> near, triggers.
+    command = step(mission, now_s=0.1, scan=None, objects=[car_with_area(20000.0)])
+    assert command == DriveCommand(-60, 255, "obstacle_avoid_shift_out")
+    assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
+
+
+def test_camera_only_zero_far_y_ratio_triggers_on_any_central_car():
+    mission = ContestObstacleMission(
+        ContestObstacleMissionConfig(
+            use_lidar=False, trigger_frames=1, camera_trigger_far_y_ratio=0.0
+        )
+    )
+    # A car high in the frame (bottom_y = 40) still triggers when the gate is 0.
+    command = step(mission, now_s=0.0, scan=None, objects=[car_with_area(1000.0)])
+    assert command == DriveCommand(-60, 255, "obstacle_avoid_shift_out")
+
+
+def test_obstacle_alert_reflects_sensing_and_active_maneuver():
+    mission = ContestObstacleMission(timed_config(trigger_frames=3, retrigger_cooldown_s=0.0))
+    car = [car_with_area(6000.0)]
+
+    # Sensing an obstacle before the trigger fires already raises the alert.
+    step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car)
+    assert mission.obstacle_alert
+    assert mission.camera_sees_car
+    assert mission.lidar_is_near
+
+    # Nothing sensed and not maneuvering -> no alert.
+    step(mission, now_s=0.1, scan=None, objects=[])
+    assert not mission.obstacle_alert
 
 
 def test_traffic_light_stop_is_preserved_during_avoidance_override():
