@@ -63,16 +63,18 @@ OBSTACLE_TRIGGER_FRAMES = 5
 
 OBSTACLE_LANE2_SHIFT_STEER = -100
 OBSTACLE_LANE1_SHIFT_STEER = 100
-OBSTACLE_SHIFT_OUT_SECONDS = 1.65
+OBSTACLE_SHIFT_OUT_SECONDS = 1.5
 # Extra shift-out time per unit of steering at detection (seconds per steer unit).
 # duration = OBSTACLE_SHIFT_OUT_SECONDS + |steer_at_detection| * this. 0 disables.
 OBSTACLE_SHIFT_OUT_STEER_WEIGHT = 0.0
-# Pass phase counter-steers opposite the shift, per lane, until the car's
-# heading matches the new lane's centerline (within OBSTACLE_PASS_ALIGN_HEADING_DEG).
+# Pass phase counter-steers opposite the shift, per lane, until the car matches
+# the new lane centerline in BOTH heading (<= OBSTACLE_PASS_ALIGN_HEADING_DEG) and
+# lateral position (|offset_norm| <= OBSTACLE_PASS_ALIGN_OFFSET_NORM).
 # OBSTACLE_PASS_MAX_SECONDS is a safety cap if the lane is never re-acquired.
 OBSTACLE_LANE2_PASS_STEER = 100
 OBSTACLE_LANE1_PASS_STEER = -100
 OBSTACLE_PASS_ALIGN_HEADING_DEG = 5.0
+OBSTACLE_PASS_ALIGN_OFFSET_NORM = 0.15
 OBSTACLE_PASS_MAX_SECONDS = 1.65
 OBSTACLE_RETRIGGER_COOLDOWN_SECONDS = 0.0
 
@@ -383,6 +385,7 @@ def main() -> None:
             lane2_pass_steer=OBSTACLE_LANE2_PASS_STEER,
             lane1_pass_steer=OBSTACLE_LANE1_PASS_STEER,
             pass_align_heading_deg=OBSTACLE_PASS_ALIGN_HEADING_DEG,
+            pass_align_offset_norm=OBSTACLE_PASS_ALIGN_OFFSET_NORM,
             pass_max_duration_s=OBSTACLE_PASS_MAX_SECONDS,
             retrigger_cooldown_s=OBSTACLE_RETRIGGER_COOLDOWN_SECONDS,
         )
@@ -463,6 +466,7 @@ def main() -> None:
                         frame_width=lane.annotated.shape[1],
                         lidar_scan=last_lidar_scan,
                         heading_deg=lane.heading_deg,
+                        offset_norm=lane.offset_norm,
                         lane_follow_steer=base_command.steer,
                         cruise_speed=controller.config.max_speed,
                     )

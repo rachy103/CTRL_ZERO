@@ -92,10 +92,13 @@ class ContestObstacleMissionConfig:
     # shift steers.
     lane2_pass_steer: int = 60
     lane1_pass_steer: int = -60
-    # Counter-steer ends when |heading of the new lane| <= this many degrees
-    # (car aligned with the new lane centerline).  pass_max_duration_s is a
-    # safety cap so a lost lane never leaves the car counter-steering forever.
+    # Counter-steer ends only when the car matches the new lane centerline in
+    # BOTH heading and lateral position: |heading| <= pass_align_heading_deg AND
+    # |offset_norm| <= pass_align_offset_norm (offset_norm is 0 at lane center).
+    # pass_max_duration_s is a safety cap so a lost lane never leaves the car
+    # counter-steering forever.
     pass_align_heading_deg: float = 5.0
+    pass_align_offset_norm: float = 0.15
     pass_max_duration_s: float = 2.0
     retrigger_cooldown_s: float = 1.0
 
@@ -138,6 +141,7 @@ class ContestObstacleMission:
         self.active_shift_out_duration_s = float(self.config.shift_out_duration_s)
         self.latest_lidar_range_mm: float | None = None
         self.latest_heading_deg: float | None = None
+        self.latest_offset_norm: float | None = None
         self.latest_lane_follow_steer = 0
         self.last_car = ContestCarObservation(False, 0.0, None)
         self.trigger_counter = 0
@@ -165,6 +169,7 @@ class ContestObstacleMission:
         frame_width: int,
         lidar_scan: np.ndarray | None,
         heading_deg: float | None = None,
+        offset_norm: float | None = None,
         lane_follow_steer: int = 0,
         cruise_speed: int | None = None,
         now_s: float | None = None,
@@ -174,6 +179,7 @@ class ContestObstacleMission:
         if observed_lane is not None:
             self.current_lane = observed_lane
         self.latest_heading_deg = heading_deg
+        self.latest_offset_norm = offset_norm
         self.latest_lane_follow_steer = int(lane_follow_steer)
         self.latest_lidar_range_mm = self._lidar_range(lidar_scan)
         self.last_car = detect_contest_car(objects, frame_width, self.config.camera_min_confidence)
@@ -246,7 +252,7 @@ class ContestObstacleMission:
 
         if self.phase == ContestObstaclePhase.AVOID_PASS:
             timed_out = now_s - self.phase_started_s >= max(0.0, self.config.pass_max_duration_s)
-            if not (self._heading_aligned_with_target_lane() or timed_out):
+            if not (self._aligned_with_target_lane() or timed_out):
                 return self._command(self._pass_steer(), "obstacle_avoid_pass")
             return self._finish_or_rechain(now_s)
         return None
@@ -279,15 +285,19 @@ class ContestObstacleMission:
             return 2
         return None
 
-    def _heading_aligned_with_target_lane(self) -> bool:
+    def _aligned_with_target_lane(self) -> bool:
         # Counter-steering ends once vision reports we are in the target lane and
-        # the followed lane's heading is within the threshold of straight ahead,
-        # i.e. the car's heading matches the new lane's centerline.
+        # the car matches its centerline in BOTH heading and lateral position:
+        # heading within the angle threshold and offset within the position
+        # threshold.  A missing reading counts as not-yet-aligned.
         if self.current_lane != self._target_lane():
             return False
-        if self.latest_heading_deg is None:
+        if self.latest_heading_deg is None or self.latest_offset_norm is None:
             return False
-        return abs(self.latest_heading_deg) <= abs(self.config.pass_align_heading_deg)
+        return (
+            abs(self.latest_heading_deg) <= abs(self.config.pass_align_heading_deg)
+            and abs(self.latest_offset_norm) <= abs(self.config.pass_align_offset_norm)
+        )
 
     def _finish_avoidance(self, now_s: float) -> None:
         # After the counter-steer pass phase there is no further steering back to

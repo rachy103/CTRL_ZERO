@@ -45,6 +45,7 @@ def step(
     cruise_speed: int | None = None,
     lane: int | None = 2,
     heading_deg: float | None = None,
+    offset_norm: float | None = None,
     lane_follow_steer: int = 0,
 ):
     return mission.step(
@@ -53,6 +54,7 @@ def step(
         frame_width=FRAME_WIDTH,
         lidar_scan=scan,
         heading_deg=heading_deg,
+        offset_norm=offset_norm,
         lane_follow_steer=lane_follow_steer,
         cruise_speed=cruise_speed,
         now_s=now_s,
@@ -68,6 +70,7 @@ def timed_config(**overrides) -> ContestObstacleMissionConfig:
         "lane2_pass_steer": 60,
         "lane1_pass_steer": -60,
         "pass_align_heading_deg": 5.0,
+        "pass_align_offset_norm": 0.15,
         "pass_max_duration_s": 0.50,
         "retrigger_cooldown_s": 1.0,
     }
@@ -179,23 +182,33 @@ def test_lane1_avoidance_counter_steers_left_on_pass():
     assert passing == DriveCommand(-60, 255, "obstacle_avoid_pass")
 
 
-def test_pass_ends_when_heading_aligns_with_new_lane_before_timeout():
-    # Long safety cap so the closed-loop heading condition, not the timeout, ends
-    # the pass.  Source lane 2 -> target lane 1.
+def test_pass_ends_when_heading_and_position_align_with_new_lane_before_timeout():
+    # Long safety cap so the closed-loop alignment, not the timeout, ends the
+    # pass.  Source lane 2 -> target lane 1.
     mission = ContestObstacleMission(
-        timed_config(pass_max_duration_s=5.0, pass_align_heading_deg=5.0, retrigger_cooldown_s=0.0)
+        timed_config(
+            pass_max_duration_s=5.0,
+            pass_align_heading_deg=5.0,
+            pass_align_offset_norm=0.15,
+            retrigger_cooldown_s=0.0,
+        )
     )
     car = [car_with_area(6000.0)]
 
     step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2)
 
     # In the new lane (1) but still angled -> keep counter-steering.
-    still_angled = step(mission, now_s=0.71, scan=None, objects=[], lane=1, heading_deg=20.0)
+    still_angled = step(mission, now_s=0.71, scan=None, objects=[], lane=1, heading_deg=20.0, offset_norm=0.05)
     assert still_angled == DriveCommand(60, 255, "obstacle_avoid_pass")
     assert mission.phase == ContestObstaclePhase.AVOID_PASS
 
-    # Heading now matches the new lane centerline -> finish well before the 5s cap.
-    aligned = step(mission, now_s=0.9, scan=None, objects=[], lane=1, heading_deg=2.0)
+    # Heading now aligned but still off-center -> NOT done, keep counter-steering.
+    off_center = step(mission, now_s=0.85, scan=None, objects=[], lane=1, heading_deg=2.0, offset_norm=0.40)
+    assert off_center == DriveCommand(60, 255, "obstacle_avoid_pass")
+    assert mission.phase == ContestObstaclePhase.AVOID_PASS
+
+    # Heading AND position both matched -> finish well before the 5s cap.
+    aligned = step(mission, now_s=0.9, scan=None, objects=[], lane=1, heading_deg=2.0, offset_norm=0.05)
     assert aligned is None
     assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
 
