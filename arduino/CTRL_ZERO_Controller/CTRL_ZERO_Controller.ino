@@ -21,10 +21,10 @@ const bool DRIVE_R_INVERTED = true;
 const bool STEER_INVERTED = true;
 
 // 가변저항 값 범위: 사용자가 실측한 딱 엣지값.
-const int POT_LEFT = 569;
-const int POT_RIGHT = 447;
-const int POT_MIN_SAFE = 447;
-const int POT_MAX_SAFE = 569;
+const int POT_LEFT = 573;
+const int POT_RIGHT = 436;
+const int POT_MIN_SAFE = 436;
+const int POT_MAX_SAFE = 573;
 
 const float STEER_KP = 2.2f;
 const float STEER_KI = 0.0f;

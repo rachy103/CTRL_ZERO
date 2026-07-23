@@ -110,7 +110,7 @@ PARKING_GO_OUT_TURN_MIN_SECONDS = 25.0
 TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.058
 
 # YOLO lane model. Use a lane-trained Ultralytics .pt file, not a generic COCO model.
-YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final.pt"
+YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final_openvino_model"
 YOLO_DEVICE = "cpu"
 YOLO_IMAGE_SIZE = 640
 YOLO_CONFIDENCE = 0.25

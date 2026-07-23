@@ -139,7 +139,7 @@ class YOLOLaneDetector:
             "iou": self.config.iou,
             "device": self.config.device,
             "verbose": False,
-            "retina_masks": True,
+            "retina_masks": False,
         }
         allowed_class_ids = self._allowed_class_ids(getattr(self.model, "names", None))
         if allowed_class_ids is not None:
