@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "model_kind": "kinematic_visual",
+  "mjcf": "assets/generated/world.xml",
+  "urdf": "assets/generated/vehicle.urdf",
+  "physics_note": "No guessed mass, inertia, tire friction, motor torque, joint effort, or joint velocity is present. The runtime advances a calibrated kinematic bicycle state and syncs MuJoCo mocap visuals before mj_step(). The URDF is a visual-only single-link artifact."
+}

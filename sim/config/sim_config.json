@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "map": {
+    "plan_image": "assets/source/track_plan.png",
+    "rgb_image": "assets/source/track_rgb.png",
+    "physical_width_m": 13.0,
+    "physical_height_m": 9.0,
+    "texture_long_edge_px": 4096,
+    "plan_rotation_clockwise_quarters": 1,
+    "spawn": {
+      "rear_axle_x_m": -5.5,
+      "rear_axle_y_m": 1.08,
+      "yaw_deg": -90.0
+    }
+  },
+  "vehicle": {
+    "body_length_m": 0.99,
+    "body_width_m": 0.55,
+    "body_height_m": 0.41,
+    "wheel_material": "polyurethane",
+    "visual_mesh_manifest": "config/vehicle_visual_mesh.json",
+    "geometry_calibration": "config/vehicle_geometry.json",
+    "front_track_m": 0.47,
+    "rear_track_m": 0.47,
+    "wheel_width_m": 0.08
+  },
+  "hardware": {
+    "command": {
+      "steer_min": -100,
+      "steer_max": 100,
+      "drive_pwm_min": -255,
+      "drive_pwm_max": 255,
+      "drive_pwm_deadband": 8,
+      "command_timeout_ms": 500
+    },
+    "steering": {
+      "pot_left": 573,
+      "pot_right": 436,
+      "pot_safe_min": 436,
+      "pot_safe_max": 573,
+      "pot_deadband_counts": 6,
+      "pid_kp": 2.2,
+      "pid_ki": 0.0,
+      "pid_kd": 0.35,
+      "motor_feedforward_pwm": 55,
+      "motor_max_pwm": 255,
+      "steer_inverted": true,
+      "straight_command": 0,
+      "left_angle_deg_at_steer_min": null,
+      "right_angle_deg_at_steer_max": null,
+      "command_slew_per_second": 900.0
+    },
+    "drive": {
+      "left_channel_inverted": true,
+      "right_channel_inverted": true,
+      "same_pwm_to_both_channels": true,
+      "driven_axle": "rear",
+      "pwm_speed_table": null,
+      "acceleration_limit_mps2": null,
+      "braking_deceleration_mps2": null,
+      "zero_pwm_behavior": null,
+      "coast_deceleration_mps2": null
+    },
+    "camera": {
+      "width_px": null,
+      "height_px": null,
+      "fps": null,
+      "horizontal_fov_deg": null,
+      "position_from_rear_axle_m": [
+        null,
+        null,
+        null
+      ],
+      "pitch_deg": null,
+      "yaw_deg": null
+    }
+  },
+  "auto": {
+    "yolo_model": null
+  },
+  "provenance": {
+    "vehicle_overall_dimensions": "User-provided vehicle size image: 99 cm x 55 cm x 41 cm.",
+    "wheel_material": "User identified the wheel material as polyurethane.",
+    "transverse_geometry": "Estimated from assets/source/vehicle_front_profile.png using the known 0.55 m overall width: both front/rear track 0.47 m and tire width 0.08 m. User confirmed equal front/rear geometry and authorized an approximate value.",
+    "map_dimensions": "Track drawing outer dimensions interpreted as 13.0 m x 9.0 m after the configured clockwise rotation.",
+    "spawn": "Rear axle placed at (-5.50, 1.08) m with yaw -90 deg so the front bumper aligns with the left Start line in the outer lane and initial travel is counterclockwise.",
+    "steering_command": "User specified straight command 0 and a command range of -100..100. Physical maximum wheel angles remain unmeasured.",
+    "driven_axle": "User specified rear-wheel drive.",
+    "firmware_parameters": "arduino/CTRL_ZERO_Controller/CTRL_ZERO_Controller.ino at repository revision 9a82359.",
+    "unknown_policy": "A null physical or hardware parameter is a hard error. It is never replaced by a fallback or estimate."
+  }
+}

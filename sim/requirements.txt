@@ -1,0 +1,5 @@
+mujoco==3.9.0
+numpy>=2.0
+opencv-python-headless>=4.13
+Pillow>=11.0
+pytest>=8.0

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "file": "track_spec_reference.png",
+      "original": "codex-clipboard-ca2a86b2-ee79-49b9-b1cc-52bf635de34b.png",
+      "sha256": "c5dc546f381e3eb99b244dfb22c2bbad8e4f6897123f765c89994635c7c24ec2",
+      "purpose": "Track specification screenshot"
+    },
+    {
+      "file": "track_plan.png",
+      "original": "codex-clipboard-6f12dc1b-8cfb-4c52-9a6f-e81212ad84d8.png",
+      "sha256": "fa188a00d88e8540a8b53b0340089a6768ff2f2d14f0f23f7bcdf215ae02b5a1",
+      "purpose": "Dimensioned track plan"
+    },
+    {
+      "file": "vehicle_size_reference.png",
+      "original": "codex-clipboard-9cbbdcca-730f-472b-9d00-5068c334ce24.png",
+      "sha256": "16aad45ea25de2a91bdfeea2be8c87a76fc3afd7778be9657e03197061d79f46",
+      "purpose": "Known 99 x 55 x 41 cm vehicle dimensions"
+    },
+    {
+      "file": "vehicle_axle_reference.png",
+      "original": "codex-clipboard-3ade8a6a-eb16-4164-8b2d-1fd19dd2908b.png",
+      "sha256": "f6e30c7067dbc66ca1eccb959a26f66984a0bcdbbe0ee376c93e24f72f48e933",
+      "purpose": "Vehicle axle and wheel calibration GUI source"
+    },
+    {
+      "file": "track_rgb.png",
+      "original": "codex-clipboard-890b600e-c630-4add-847e-a91bfb10a5ba.png",
+      "sha256": "44a268a95e62028402f52e74d86af737b6ccf4781e9f382cc86b684d239a9ed9",
+      "purpose": "RGB floor texture source"
+    }
+  ]
+}

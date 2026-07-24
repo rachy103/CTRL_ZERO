@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "status": "visible_left_side_annotated",
+  "vehicle_length_m": 0.99,
+  "vehicle_geometry": {
+    "rear_axle_from_rear_m": 0.18919845455343726,
+    "front_axle_from_rear_m": 0.7921851126802032,
+    "wheelbase_m": 0.602986658126766,
+    "front_track_m": null,
+    "rear_track_m": null,
+    "wheel_radius_m": 0.09562475303556417
+  },
+  "calibration": {
+    "method": "affine_projection_on_visible_left_side_body_axis",
+    "source_image": "assets/source/vehicle_side_profile.png",
+    "known_length_m": 0.99,
+    "scale_m_per_px": 0.002249994189072098,
+    "body_length_px": 440.00113636216895,
+    "points_px": {
+      "body_rear": [
+        470.0,
+        261.0
+      ],
+      "body_front": [
+        30.0,
+        262.0
+      ],
+      "rear_left_wheel_center": [
+        386.0,
+        300.0
+      ],
+      "rear_left_wheel_edge": [
+        386.0,
+        344.0
+      ],
+      "front_left_wheel_center": [
+        118.0,
+        298.0
+      ],
+      "front_left_wheel_edge": [
+        118.0,
+        339.0
+      ]
+    },
+    "wheel_radius_estimates_m": {
+      "rear": 0.09899974431917233,
+      "front": 0.09224976175195602,
+      "configured_mean": 0.09562475303556417
+    },
+    "projected_wheel_centers_px": {
+      "rear": [
+        385.9117979762501,
+        261.19110955005397
+      ],
+      "front": [
+        117.9177276976875,
+        261.80018698250524
+      ]
+    },
+    "limitations": [
+      "Longitudinal values use a 1D affine image scale. Perspective depth cannot be solved from only two known body endpoints in one oblique photograph.",
+      "The profile photo is treated as an orthographic-like side view when converting wheel pixel radii with the body scale.",
+      "The hidden right-side wheels are not mirrored or guessed. Front/rear track remain null."
+    ],
+    "unmeasured": {
+      "front_track_m": "Hidden right-side wheel center is unavailable.",
+      "rear_track_m": "Hidden right-side wheel center is unavailable."
+    },
+    "wheel_material": "polyurethane"
+  }
+}

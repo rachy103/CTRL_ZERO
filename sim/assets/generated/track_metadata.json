@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "status": "final",
+  "registration_method": "four_corner_normalization_of_rgb_artwork_and_rotated_plan_frame",
+  "rgb_source": "assets/source/track_rgb.png",
+  "rgb_source_sha256": "44a268a95e62028402f52e74d86af737b6ccf4781e9f382cc86b684d239a9ed9",
+  "rgb_crop_xyxy_px": [
+    11,
+    101,
+    825,
+    711
+  ],
+  "rgb_crop_size_px": [
+    814,
+    610
+  ],
+  "plan_source": "assets/source/track_plan.png",
+  "plan_source_sha256": "fa188a00d88e8540a8b53b0340089a6768ff2f2d14f0f23f7bcdf215ae02b5a1",
+  "plan_frame_xyxy_px": [
+    68,
+    51,
+    413,
+    553
+  ],
+  "plan_rotation_clockwise_quarters": 1,
+  "rotated_plan_frame_size_px": [
+    502,
+    345
+  ],
+  "physical_size_m": [
+    13.0,
+    9.0
+  ],
+  "texture_size_px": [
+    4096,
+    2836
+  ],
+  "rgb_scale_xy": [
+    5.031941031941032,
+    4.649180327868852
+  ],
+  "plan_scale_xy": [
+    8.159362549800797,
+    8.220289855072464
+  ],
+  "interpolation": "OpenCV INTER_LANCZOS4",
+  "texture": "assets/generated/track_texture.png",
+  "alignment_preview": "assets/generated/track_alignment_preview.png",
+  "alignment_preview_note": "Magenta pixels are plan linework resized over the RGB texture. They are QA evidence and are not baked into the floor texture."
+}
