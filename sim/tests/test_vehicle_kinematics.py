@@ -41,6 +41,7 @@ def calibration() -> KinematicCalibration:
             (160, 1.10),
             (255, 2.00),
         ),
+        speed_response_mode="rate_limited",
         acceleration_limit_mps2=2.0,
         braking_deceleration_mps2=4.0,
         zero_pwm_behavior="brake",
@@ -305,6 +306,34 @@ def test_measured_acceleration_limit_controls_speed_and_travel(
     assert second.rear_axle_x_m == pytest.approx(0.25)
 
 
+def test_instantaneous_response_reaches_target_without_rate_values(
+    calibration: KinematicCalibration,
+) -> None:
+    instantaneous = replace(
+        calibration,
+        speed_response_mode="instantaneous",
+        acceleration_limit_mps2=None,
+        braking_deceleration_mps2=None,
+    )
+    instantaneous.validate()
+    vehicle = KinematicVehicle(
+        instantaneous,
+        rear_axle_x_m=0.0,
+        rear_axle_y_m=0.0,
+        yaw_rad=0.0,
+    )
+
+    vehicle.set_command(steer=0, pwm=255)
+    forward = vehicle.step(0.25)
+    assert forward.speed_mps == pytest.approx(2.0)
+    assert forward.rear_axle_x_m == pytest.approx(0.5)
+
+    vehicle.set_command(steer=0, pwm=-255)
+    reverse = vehicle.step(0.25)
+    assert reverse.speed_mps == pytest.approx(-1.5)
+    assert reverse.rear_axle_x_m == pytest.approx(0.125)
+
+
 def test_brake_behavior_uses_measured_braking_deceleration(
     calibration: KinematicCalibration,
 ) -> None:
@@ -385,6 +414,7 @@ def test_from_config_blocks_null_measured_hardware() -> None:
             "drive": {
                 "driven_axle": "rear",
                 "pwm_speed_table": None,
+                "speed_response_mode": "rate_limited",
                 "acceleration_limit_mps2": None,
                 "braking_deceleration_mps2": None,
                 "zero_pwm_behavior": None,

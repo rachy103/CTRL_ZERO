@@ -74,13 +74,25 @@ class KinematicCalibration:
     pwm_deadband: int
     driven_axle: str
     pwm_speed_table: tuple[tuple[int, float], ...]
-    acceleration_limit_mps2: float
-    braking_deceleration_mps2: float
+    speed_response_mode: str
+    acceleration_limit_mps2: float | None
+    braking_deceleration_mps2: float | None
     zero_pwm_behavior: str
     coast_deceleration_mps2: float | None
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "KinematicCalibration":
+        response_mode = str(
+            get_value(config, "hardware.drive.speed_response_mode")
+        ).strip().lower()
+        required_hardware = list(KINEMATIC_HARDWARE_REQUIRED)
+        if response_mode == "rate_limited":
+            required_hardware.extend(
+                (
+                    "hardware.drive.acceleration_limit_mps2",
+                    "hardware.drive.braking_deceleration_mps2",
+                )
+            )
         require_parameters(
             config,
             (
@@ -88,7 +100,7 @@ class KinematicCalibration:
                 "vehicle.front_track_m",
                 "vehicle.rear_track_m",
                 "vehicle.wheel_radius_m",
-                *KINEMATIC_HARDWARE_REQUIRED,
+                *required_hardware,
             ),
             context="Kinematic vehicle calibration",
         )
@@ -121,6 +133,12 @@ class KinematicCalibration:
                 )
             parsed_table.append((pwm, speed))
         coast_value = get_value(config, "hardware.drive.coast_deceleration_mps2")
+        acceleration_value = get_value(
+            config, "hardware.drive.acceleration_limit_mps2"
+        )
+        braking_value = get_value(
+            config, "hardware.drive.braking_deceleration_mps2"
+        )
         calibration = cls(
             wheelbase_m=float(get_value(config, "vehicle.wheelbase_m")),
             front_track_m=float(get_value(config, "vehicle.front_track_m")),
@@ -145,11 +163,12 @@ class KinematicCalibration:
                 get_value(config, "hardware.drive.driven_axle")
             ).strip().lower(),
             pwm_speed_table=tuple(parsed_table),
-            acceleration_limit_mps2=float(
-                get_value(config, "hardware.drive.acceleration_limit_mps2")
+            speed_response_mode=response_mode,
+            acceleration_limit_mps2=(
+                float(acceleration_value) if is_known(acceleration_value) else None
             ),
-            braking_deceleration_mps2=float(
-                get_value(config, "hardware.drive.braking_deceleration_mps2")
+            braking_deceleration_mps2=(
+                float(braking_value) if is_known(braking_value) else None
             ),
             zero_pwm_behavior=str(
                 get_value(config, "hardware.drive.zero_pwm_behavior")
@@ -170,9 +189,14 @@ class KinematicCalibration:
             "left_angle_deg_at_steer_min": self.left_angle_rad,
             "right_angle_deg_at_steer_max": self.right_angle_rad,
             "command_slew_per_second": self.command_slew_per_second,
-            "acceleration_limit_mps2": self.acceleration_limit_mps2,
-            "braking_deceleration_mps2": self.braking_deceleration_mps2,
         }
+        if self.speed_response_mode == "rate_limited":
+            positive.update(
+                {
+                    "acceleration_limit_mps2": self.acceleration_limit_mps2,
+                    "braking_deceleration_mps2": self.braking_deceleration_mps2,
+                }
+            )
         invalid = [
             name
             for name, value in positive.items()
@@ -213,6 +237,10 @@ class KinematicCalibration:
         if self.driven_axle not in {"front", "rear", "all"}:
             raise ConfigurationError(
                 "hardware.drive.driven_axle must be front, rear, or all."
+            )
+        if self.speed_response_mode not in {"instantaneous", "rate_limited"}:
+            raise ConfigurationError(
+                "hardware.drive.speed_response_mode must be instantaneous or rate_limited."
             )
         if self.zero_pwm_behavior not in {"coast", "brake"}:
             raise ConfigurationError(
@@ -365,7 +393,9 @@ class KinematicVehicle:
         )
         target_speed = self.calibration.speed_from_pwm(self.target_pwm)
         previous_speed = self.state.speed_mps
-        if math.isclose(previous_speed, target_speed, abs_tol=1e-12):
+        if self.calibration.speed_response_mode == "instantaneous":
+            speed = target_speed
+        elif math.isclose(previous_speed, target_speed, abs_tol=1e-12):
             speed = target_speed
         else:
             reversing = previous_speed * target_speed < 0
@@ -389,7 +419,11 @@ class KinematicVehicle:
             if reversing and previous_speed * speed < 0:
                 speed = 0.0
 
-        travel_speed = (previous_speed + speed) / 2.0
+        travel_speed = (
+            speed
+            if self.calibration.speed_response_mode == "instantaneous"
+            else (previous_speed + speed) / 2.0
+        )
         travel_m = travel_speed * dt
         self.state.rear_axle_x_m += travel_m * math.cos(self.state.yaw_rad)
         self.state.rear_axle_y_m += travel_m * math.sin(self.state.yaw_rad)

@@ -57,43 +57,73 @@ def test_actual_null_parameters_are_hard_errors_without_mutating_config() -> Non
     original_text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")
     config = load_config()
 
-    expected_missing = {
-        "hardware.steering.left_angle_deg_at_steer_min",
-        "hardware.steering.right_angle_deg_at_steer_max",
-        "hardware.drive.pwm_speed_table",
-        "hardware.drive.acceleration_limit_mps2",
-        "hardware.drive.braking_deceleration_mps2",
-        "hardware.drive.zero_pwm_behavior",
-    }
-    assert expected_missing.issubset(set(missing_parameters(config)))
+    assert missing_parameters(config) == []
     assert get_value(config, "vehicle.wheelbase_m") > 0.0
     assert get_value(config, "vehicle.wheel_radius_m") > 0.0
     assert get_value(config, "vehicle.front_track_m") == pytest.approx(0.47)
     assert get_value(config, "vehicle.rear_track_m") == pytest.approx(0.47)
     assert get_value(config, "vehicle.wheel_width_m") == pytest.approx(0.08)
-    assert get_value(config, "map.physical_width_m") == pytest.approx(13.0)
-    assert get_value(config, "map.physical_height_m") == pytest.approx(9.0)
+    # 13.0 x 9.0 m rescaled by k = 850 mm spec road width / 732.5 mm measured.
+    assert get_value(config, "map.physical_width_m") == pytest.approx(
+        13.0 * 850.0 / 732.5
+    )
+    assert get_value(config, "map.physical_height_m") == pytest.approx(
+        9.0 * 850.0 / 732.5
+    )
     assert get_value(config, "hardware.steering.straight_command") == 0
+    assert get_value(
+        config, "hardware.steering.position_sensor.rotation_angle_deg"
+    ) == pytest.approx(270.0)
+    assert get_value(
+        config, "hardware.steering.position_sensor.calibrated_pot_shaft_span_deg"
+    ) == pytest.approx((573 - 436) / 1023 * 270)
+    assert get_value(
+        config, "hardware.steering.left_angle_deg_at_steer_min"
+    ) == pytest.approx((573 - 436) / 1023 * 270 / 2)
+    assert get_value(
+        config, "hardware.steering.right_angle_deg_at_steer_max"
+    ) == pytest.approx((573 - 436) / 1023 * 270 / 2)
     assert get_value(config, "hardware.drive.driven_axle") == "rear"
+    assert get_value(config, "hardware.drive.zero_pwm_behavior") == "brake"
+    assert get_value(config, "hardware.drive.speed_response_mode") == (
+        "instantaneous"
+    )
+    assert get_value(
+        config, "hardware.camera_measurements.estimated_x_from_rear_axle_m"
+    ) == pytest.approx(0.067)
+    speed_measurement = get_value(
+        config, "hardware.drive.speed_measurements"
+    )[0]
+    assert speed_measurement["pwm"] == 255
+    assert speed_measurement["direction"] == "forward"
+    assert speed_measurement["speed_mps"] == pytest.approx(1.0 / 1.75)
+    # Endpoints hold the lap-time calibrated speed on the rescaled map; the
+    # original 1 m / 1.75 s stop-start measurement stays archived above.
+    assert get_value(config, "hardware.drive.pwm_speed_table") == [
+        [-255, pytest.approx(-0.778)],
+        [-8, 0.0],
+        [0, 0.0],
+        [8, 0.0],
+        [255, pytest.approx(0.778)],
+    ]
+    assert get_value(config, "hardware.camera.fps") == 30
 
     with pytest.raises(ConfigurationError) as captured:
         require_parameters(
             config,
             (
-                "hardware.steering.left_angle_deg_at_steer_min",
-                "hardware.drive.pwm_speed_table",
+                "hardware.drive.acceleration_limit_mps2",
+                "hardware.drive.braking_deceleration_mps2",
             ),
             context="Null policy test",
         )
 
     message = str(captured.value)
-    assert "hardware.steering.left_angle_deg_at_steer_min" in message
-    assert "hardware.drive.pwm_speed_table" in message
+    assert "hardware.drive.acceleration_limit_mps2" in message
+    assert "hardware.drive.braking_deceleration_mps2" in message
     assert "No fallback or estimated value was substituted." in message
-    assert get_value(
-        config, "hardware.steering.left_angle_deg_at_steer_min"
-    ) is None
-    assert get_value(config, "hardware.drive.pwm_speed_table") is None
+    assert get_value(config, "hardware.drive.acceleration_limit_mps2") is None
+    assert get_value(config, "hardware.drive.pwm_speed_table") is not None
     assert DEFAULT_CONFIG_PATH.read_text(encoding="utf-8") == original_text
 
 

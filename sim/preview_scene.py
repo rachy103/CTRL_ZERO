@@ -26,6 +26,9 @@ VEHICLE_PATH = sim_path("assets/generated/vehicle_mesh_preview.png")
 VEHICLE_SIDE_PATH = sim_path(
     "assets/generated/vehicle_mesh_side_preview.png"
 )
+ONBOARD_CAMERA_PATH = sim_path(
+    "assets/generated/onboard_camera_preview.png"
+)
 
 
 def _mocap_id(model: Any, name: str) -> int:
@@ -97,9 +100,31 @@ def _render(
     return destination
 
 
+def _render_onboard(
+    model: Any,
+    data: Any,
+    destination: Path,
+    config: dict[str, Any],
+) -> Path:
+    import mujoco
+
+    width = int(get_value(config, "hardware.camera.width_px"))
+    height = int(get_value(config, "hardware.camera.height_px"))
+    renderer = mujoco.Renderer(model, height=height, width=width)
+    try:
+        renderer.update_scene(data, camera="onboard")
+        pixels = renderer.render()
+    finally:
+        renderer.close()
+    destination = sim_path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(pixels).save(destination)
+    return destination
+
+
 def build_preview(
     config_path: Path,
-) -> tuple[Path, Path, Path, Path, Path]:
+) -> tuple[Path, Path, Path, Path, Path, Path]:
     import mujoco
 
     config = load_config(config_path)
@@ -149,7 +174,20 @@ def build_preview(
         elevation=-10.0,
         azimuth=0.0,
     )
-    return outputs["mjcf"], overview, closeup, vehicle, vehicle_side
+    onboard = _render_onboard(
+        model,
+        data,
+        ONBOARD_CAMERA_PATH,
+        config,
+    )
+    return (
+        outputs["mjcf"],
+        overview,
+        closeup,
+        vehicle,
+        vehicle_side,
+        onboard,
+    )
 
 
 def launch_interactive(world_path: Path, config_path: Path) -> None:
@@ -185,12 +223,15 @@ def main() -> int:
     )
     parser.add_argument("--interactive", action="store_true")
     args = parser.parse_args()
-    world, overview, closeup, vehicle, vehicle_side = build_preview(args.config)
+    world, overview, closeup, vehicle, vehicle_side, onboard = build_preview(
+        args.config
+    )
     print(f"Built: {world}")
     print(f"Overview: {overview}")
     print(f"Close-up: {closeup}")
     print(f"Vehicle: {vehicle}")
     print(f"Vehicle side: {vehicle_side}")
+    print(f"Onboard camera: {onboard}")
     if args.interactive:
         launch_interactive(world, args.config)
     return 0

@@ -213,7 +213,14 @@ def _validate_spawn_config(config: dict[str, Any]) -> None:
 
 
 class ManualControl:
-    """The same start gate and W/S/A/D pulse behavior as main.py."""
+    """Map collision-free arrow keys onto main.py's speed and steering rules."""
+
+    KEY_ESCAPE = 256
+    KEY_ENTER = 257
+    KEY_RIGHT = 262
+    KEY_LEFT = 263
+    KEY_DOWN = 264
+    KEY_UP = 265
 
     def __init__(self, controller: Any):
         import main as real_main
@@ -241,7 +248,7 @@ class ManualControl:
         # GLFW reports letter keys as uppercase ASCII regardless of Shift.
         with self._lock:
             now = time.monotonic()
-            if keycode in (ord("Q"), 256):  # Q or Escape
+            if keycode in (ord("Q"), self.KEY_ESCAPE):
                 self.quit_requested = True
                 return
             if keycode == 32:  # Space: stop and keep manual mode armed.
@@ -252,9 +259,18 @@ class ManualControl:
                 self.manual_steer_until = 0.0
                 return
             if not self.drive_started:
-                if keycode == ord("D"):
+                if keycode == self.KEY_ENTER:
                     self.drive_started = True
-                return
+                    return
+                if keycode in (
+                    self.KEY_UP,
+                    self.KEY_DOWN,
+                    self.KEY_LEFT,
+                    self.KEY_RIGHT,
+                ):
+                    self.drive_started = True
+                else:
+                    return
             if keycode in (ord("="), 334):  # Main keyboard +/= or keypad add.
                 self.controller.config.max_speed = self._clamp_int(
                     int(self.controller.config.max_speed) + 5,
@@ -267,31 +283,28 @@ class ManualControl:
                     self.min_speed,
                     self.max_speed,
                 )
-            elif keycode == ord("W"):
+            elif keycode == self.KEY_UP:
                 self.manual_speed = self._clamp_int(
                     self.manual_speed + self.speed_step,
                     -self.max_speed,
                     self.max_speed,
                 )
-            elif keycode == ord("S"):
+            elif keycode == self.KEY_DOWN:
                 self.manual_speed = self._clamp_int(
                     self.manual_speed - self.speed_step,
                     -self.max_speed,
                     self.max_speed,
                 )
-            elif keycode == ord("A"):
+            elif keycode == self.KEY_LEFT:
                 self.manual_steer = -self._clamp_int(
                     self.steer_power, 0, self.max_steer
                 )
                 self.manual_steer_until = now + self.steer_hold_s
-            elif keycode == ord("D"):
+            elif keycode == self.KEY_RIGHT:
                 self.manual_steer = self._clamp_int(
                     self.steer_power, 0, self.max_steer
                 )
                 self.manual_steer_until = now + self.steer_hold_s
-            elif keycode == ord("C"):
-                self.manual_steer = 0
-                self.manual_steer_until = 0.0
 
     def arm_with_explicit_command(self, steer: int, pwm: int) -> None:
         with self._lock:
@@ -557,6 +570,7 @@ def _run_loop(
     config: dict[str, Any],
     *,
     mode: str,
+    view: str,
     headless: bool,
     steps: int | None,
     explicit_steer: int | None,
@@ -629,8 +643,8 @@ def _run_loop(
         import mujoco.viewer
 
         print(
-            "Keys: D start | W/S PWM | A/D steering pulse | C center | +/- auto max PWM "
-            "| Space stop | Q quit"
+            "Keys: arrows drive/steer | Enter arm | +/- auto max PWM "
+            "| Space stop | Q/Escape quit (W is MuJoCo wireframe; not a drive key)"
         )
         with mujoco.viewer.launch_passive(
             model,
@@ -639,13 +653,17 @@ def _run_loop(
             show_left_ui=True,
             show_right_ui=True,
         ) as viewer:
-            viewer.cam.lookat[:] = (0.0, 0.0, 0.0)
-            viewer.cam.distance = max(
-                float(get_value(config, "map.physical_width_m")),
-                float(get_value(config, "map.physical_height_m")),
-            ) * 0.92
-            viewer.cam.azimuth = 90.0
-            viewer.cam.elevation = -70.0
+            if view == "onboard":
+                viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+                viewer.cam.fixedcamid = model.camera("onboard").id
+            else:
+                viewer.cam.lookat[:] = (0.0, 0.0, 0.0)
+                viewer.cam.distance = max(
+                    float(get_value(config, "map.physical_width_m")),
+                    float(get_value(config, "map.physical_height_m")),
+                ) * 0.92
+                viewer.cam.azimuth = 90.0
+                viewer.cam.elevation = -70.0
             while viewer.is_running() and not manual.quit_requested:
                 started = time.perf_counter()
                 one_step()
@@ -671,6 +689,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mode", choices=("manual", "auto"), default="manual")
+    parser.add_argument(
+        "--view",
+        choices=("overhead", "onboard"),
+        default="overhead",
+    )
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--build-only", action="store_true")
     parser.add_argument("--headless", action="store_true")
@@ -714,6 +737,7 @@ def main() -> int:
         return _run_loop(
             config,
             mode=args.mode,
+            view=args.view,
             headless=args.headless,
             steps=args.steps,
             explicit_steer=args.command_steer,

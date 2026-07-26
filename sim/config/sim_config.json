@@ -3,13 +3,13 @@
   "map": {
     "plan_image": "assets/source/track_plan.png",
     "rgb_image": "assets/source/track_rgb.png",
-    "physical_width_m": 13.0,
-    "physical_height_m": 9.0,
+    "physical_width_m": 15.0853242321,
+    "physical_height_m": 10.4436860068,
     "texture_long_edge_px": 4096,
     "plan_rotation_clockwise_quarters": 1,
     "spawn": {
-      "rear_axle_x_m": -5.5,
-      "rear_axle_y_m": 1.08,
+      "rear_axle_x_m": -6.3822525597,
+      "rear_axle_y_m": 1.2532423208,
       "yaw_deg": -90.0
     }
   },
@@ -46,8 +46,16 @@
       "motor_max_pwm": 255,
       "steer_inverted": true,
       "straight_command": 0,
-      "left_angle_deg_at_steer_min": null,
-      "right_angle_deg_at_steer_max": null,
+      "position_sensor": {
+        "model": "ELB030640",
+        "resistance_ohm": 20000,
+        "rotation_angle_deg": 270.0,
+        "adc_full_scale_counts": 1023,
+        "calibrated_adc_span_counts": 137,
+        "calibrated_pot_shaft_span_deg": 36.158357771
+      },
+      "left_angle_deg_at_steer_min": 18.0791788855,
+      "right_angle_deg_at_steer_max": 18.0791788855,
       "command_slew_per_second": 900.0
     },
     "drive": {
@@ -55,37 +63,96 @@
       "right_channel_inverted": true,
       "same_pwm_to_both_channels": true,
       "driven_axle": "rear",
-      "pwm_speed_table": null,
+      "pwm_speed_table": [
+        [
+          -255,
+          -0.778
+        ],
+        [
+          -8,
+          0.0
+        ],
+        [
+          0,
+          0.0
+        ],
+        [
+          8,
+          0.0
+        ],
+        [
+          255,
+          0.778
+        ]
+      ],
+      "speed_measurements": [
+        {
+          "pwm": 255,
+          "direction": "forward",
+          "distance_m": 1.0,
+          "elapsed_s": 1.75,
+          "speed_mps": 0.571428571429,
+          "note": "Superseded for the table endpoint: the 1 m stop-start run includes launch acceleration and underestimates steady-state speed."
+        },
+        {
+          "pwm": 255,
+          "direction": "forward",
+          "method": "lap_time_back_calculation",
+          "real_lap_time_s": 47.5,
+          "simulated_lap_path_m": 36.96,
+          "note": "Path length re-derived after the k=1.1604096 map rescale; supersedes the 31.7 m / 0.667 m/s value computed on the undersized 13 x 9 m map.",
+          "speed_mps": 0.778
+        }
+      ],
+      "speed_response_mode": "instantaneous",
       "acceleration_limit_mps2": null,
       "braking_deceleration_mps2": null,
-      "zero_pwm_behavior": null,
+      "zero_pwm_behavior": "brake",
       "coast_deceleration_mps2": null
     },
     "camera": {
-      "width_px": null,
-      "height_px": null,
-      "fps": null,
-      "horizontal_fov_deg": null,
+      "width_px": 640,
+      "height_px": 480,
+      "fps": 30,
+      "horizontal_fov_deg": 70.42,
       "position_from_rear_axle_m": [
-        null,
-        null,
-        null
+        0.067,
+        0.0,
+        0.8
       ],
-      "pitch_deg": null,
-      "yaw_deg": null
+      "pitch_deg": -17.0,
+      "yaw_deg": 0.0
+    },
+    "camera_measurements": {
+      "width_px": 640,
+      "height_px": 480,
+      "height_above_ground_m": 0.8,
+      "estimated_x_from_rear_axle_m": 0.067,
+      "estimated_x_method": "Scaled from the modified-vehicle side photograph using the calibrated 0.6029866581 m wheelbase; the lens projection is about 81 px forward of the rear axle over about 727 px between axle centers.",
+      "camera_model": "Logitech C922 Pro Stream Webcam",
+      "horizontal_fov_deg": 70.42,
+      "lateral_position_m": 0.0,
+      "yaw_deg": 0.0,
+      "visually_calibrated_pitch_deg": -17.0,
+      "view_description": "Slightly pitched downward so a small part of the front bumper is visible."
     }
   },
   "auto": {
-    "yolo_model": null
+    "yolo_model": "../models/final_openvino_model"
   },
   "provenance": {
     "vehicle_overall_dimensions": "User-provided vehicle size image: 99 cm x 55 cm x 41 cm.",
     "wheel_material": "User identified the wheel material as polyurethane.",
     "transverse_geometry": "Estimated from assets/source/vehicle_front_profile.png using the known 0.55 m overall width: both front/rear track 0.47 m and tire width 0.08 m. User confirmed equal front/rear geometry and authorized an approximate value.",
-    "map_dimensions": "Track drawing outer dimensions interpreted as 13.0 m x 9.0 m after the configured clockwise rotation.",
-    "spawn": "Rear axle placed at (-5.50, 1.08) m with yaw -90 deg so the front bumper aligns with the left Start line in the outer lane and initial travel is counterclockwise.",
+    "map_dimensions": "Originally interpreted as 13.0 m x 9.0 m. Texture measurements against the official specification sheet (road width 850 mm, parking pitch 950 mm, crosswalk stripe 100 mm) showed all area features uniformly ~14-25% small, so the user authorized rescaling by k = 850 / 732.5 = 1.1604096 anchored on the measured line-center-to-line-center road width; parking pitch (k=1.170) and crosswalk stripe width (k=1.163) independently agree. Result: 15.0853242321 m x 10.4436860068 m with the drawing aspect ratio preserved. Painted line widths render ~59 mm versus the 50 mm specification because the source artwork draws strokes out of scale.",
+    "spawn": "Rear axle originally at (-5.50, 1.08) m, scaled by the same k=1.1604096 map rescale to (-6.3822525597, 1.2532423208) m, yaw -90 deg, keeping the front bumper on the left Start line in the outer lane with initial counterclockwise travel.",
     "steering_command": "User specified straight command 0 and a command range of -100..100. Physical maximum wheel angles remain unmeasured.",
+    "steering_position_sensor": "User identified the steering position sensor as ELB030640 (20 kOhm), confirmed a 1:1 relationship between potentiometer travel and road-wheel steering, and authorized the derived symmetric maximum road-wheel angle of +/-18.0791788855 deg.",
     "driven_axle": "User specified rear-wheel drive.",
+    "zero_pwm_behavior": "User confirmed that drive PWM 0 behaves as braking.",
+    "drive_speed_measurement": "User measured 1.0 m in 1.75 s at forward PWM 255 (0.571428571429 m/s), confirmed equal reverse endpoint speed, and explicitly authorized linear interpolation for all remaining PWM values outside the firmware deadband. The user later reported a real lap time of 47-48 s and authorized recalibrating the PWM 255 endpoint from lap time; after the k=1.1604096 map rescale the outer-lane path is ~36.96 m, giving 0.778 m/s (supersedes the interim 0.667 m/s derived on the undersized map). The reverse endpoint is scaled to match.",
+    "drive_speed_response": "User explicitly authorized instantaneous target-speed response with no simulated acceleration or braking delay.",
+    "camera_measurement": "User specified Logitech C922, 640x480 images, camera height 0.80 m above ground, centered lateral mounting, and forward yaw. Logitech specifies 70.42 deg horizontal FOV. A user-provided modified-vehicle side photograph estimates the lens at +0.067 m forward of the rear axle. Rendered comparison at -10, -17, and -20 deg selected -17 deg because only a small part of the vehicle enters the bottom edge. The user authorized recording 30 fps, the C922 standard capture rate at 640x480, pending an exact measurement.",
     "firmware_parameters": "arduino/CTRL_ZERO_Controller/CTRL_ZERO_Controller.ino at repository revision 9a82359.",
     "unknown_policy": "A null physical or hardware parameter is a hard error. It is never replaced by a fallback or estimate."
   }

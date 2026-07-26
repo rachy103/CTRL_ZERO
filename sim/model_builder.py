@@ -36,7 +36,6 @@ CAMERA_FIELDS = {
     "position": "hardware.camera.position_from_rear_axle_m",
     "width_px": "hardware.camera.width_px",
     "height_px": "hardware.camera.height_px",
-    "fps": "hardware.camera.fps",
     "horizontal_fov_deg": "hardware.camera.horizontal_fov_deg",
     "pitch_deg": "hardware.camera.pitch_deg",
     "yaw_deg": "hardware.camera.yaw_deg",
@@ -183,15 +182,40 @@ def _register_visual_mesh_assets(
             raise ConfigurationError(
                 f"Visual mesh material rgba must have four values: {category}"
             )
+        material_attributes = {
+            "name": f"vehicle_mesh_material_{category}",
+            "rgba": _vector(*(float(value) for value in rgba)),
+            "specular": "0.25",
+            "shininess": "0.3",
+        }
+        texture_value = properties.get("texture")
+        if texture_value is not None:
+            texture_path = sim_path(str(texture_value), must_exist=True)
+            texture_name = f"vehicle_mesh_texture_{category}"
+            relative_texture = os.path.relpath(
+                texture_path,
+                asset_directory,
+            ).replace("\\", "/")
+            ET.SubElement(
+                asset,
+                "texture",
+                {
+                    "name": texture_name,
+                    "type": "2d",
+                    "file": relative_texture,
+                },
+            )
+            material_attributes.update(
+                {
+                    "texture": texture_name,
+                    "texrepeat": "1 1",
+                    "texuniform": "false",
+                }
+            )
         ET.SubElement(
             asset,
             "material",
-            {
-                "name": f"vehicle_mesh_material_{category}",
-                "rgba": _vector(*(float(value) for value in rgba)),
-                "specular": "0.25",
-                "shininess": "0.3",
-            },
+            material_attributes,
         )
 
     def register_entries(
@@ -312,10 +336,6 @@ def _validated_camera(config: dict[str, Any]) -> dict[str, Any] | None:
             f"{CAMERA_FIELDS['height_px']} must be a positive integer."
         )
 
-    fps = _finite_number(raw["fps"], CAMERA_FIELDS["fps"])
-    if fps <= 0:
-        raise ConfigurationError(f"{CAMERA_FIELDS['fps']} must be greater than zero.")
-
     horizontal_fov = _finite_number(
         raw["horizontal_fov_deg"],
         CAMERA_FIELDS["horizontal_fov_deg"],
@@ -332,7 +352,6 @@ def _validated_camera(config: dict[str, Any]) -> dict[str, Any] | None:
         "position": validated_position,
         "width_px": int(width),
         "height_px": int(height),
-        "fps": fps,
         "horizontal_fov_deg": horizontal_fov,
         "pitch_deg": pitch,
         "yaw_deg": yaw,

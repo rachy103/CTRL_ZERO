@@ -191,8 +191,7 @@ KINEMATIC_HARDWARE_REQUIRED = (
     "hardware.steering.command_slew_per_second",
     "hardware.drive.driven_axle",
     "hardware.drive.pwm_speed_table",
-    "hardware.drive.acceleration_limit_mps2",
-    "hardware.drive.braking_deceleration_mps2",
+    "hardware.drive.speed_response_mode",
     "hardware.drive.zero_pwm_behavior",
 )
 
@@ -229,6 +228,13 @@ def missing_parameters(
     if auto:
         required.extend(AUTO_CAMERA_REQUIRED)
         required.append("auto.yolo_model")
+    if get_value(config, "hardware.drive.speed_response_mode") == "rate_limited":
+        required.extend(
+            (
+                "hardware.drive.acceleration_limit_mps2",
+                "hardware.drive.braking_deceleration_mps2",
+            )
+        )
     return [key for key in required if not is_known(get_value(config, key))]
 
 

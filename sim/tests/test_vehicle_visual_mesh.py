@@ -67,18 +67,18 @@ def test_body_visual_mesh_has_fixed_length_and_width() -> None:
     )
 
 
-def test_each_source_tire_has_measured_radius_and_width() -> None:
+def test_each_visual_wheel_has_measured_radius_and_width() -> None:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     target = manifest["target_geometry_m"]
 
     for entries in manifest["wheel_meshes"].values():
-        tire_entries = [
-            entry for entry in entries if entry["material"] == "tire"
-        ]
-        assert len(tire_entries) == 1
-        minimum, maximum = _bounds(tire_entries)
+        minimum, maximum = _bounds(entries)
         assert maximum[1] - minimum[1] == pytest.approx(
             target["wheel_width"], abs=2e-7
+        )
+        assert maximum[0] - minimum[0] == pytest.approx(
+            target["wheel_radius"] * 2.0,
+            abs=5e-5,
         )
         assert maximum[2] - minimum[2] == pytest.approx(
             target["wheel_radius"] * 2.0,

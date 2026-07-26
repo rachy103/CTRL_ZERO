@@ -170,7 +170,6 @@ def test_partial_camera_configuration_is_rejected(sim_temp_dir: Path) -> None:
         ),
         ("width_px", 640.5, "must be a positive integer"),
         ("height_px", 0, "must be a positive integer"),
-        ("fps", -1.0, "must be greater than zero"),
         ("horizontal_fov_deg", 180.0, "must be between 0 and 180"),
         ("pitch_deg", "down", "must be a finite number"),
         ("yaw_deg", math.inf, "must be a finite number"),
@@ -217,6 +216,20 @@ def test_valid_camera_is_written_to_mjcf(sim_temp_dir: Path) -> None:
         rel=1e-8,
     )
     assert len(camera.attrib["xyaxes"].split()) == 6
+
+
+def test_visual_camera_does_not_require_capture_fps(sim_temp_dir: Path) -> None:
+    camera_values = _camera_values()
+    camera_values["fps"] = None
+
+    world_path = _build_mjcf(
+        sim_temp_dir,
+        _config(camera=camera_values),
+    )
+
+    assert ET.parse(world_path).getroot().find(
+        ".//camera[@name='onboard']"
+    ) is not None
 
 
 def test_urdf_is_visual_only_single_link_artifact(sim_temp_dir: Path) -> None:

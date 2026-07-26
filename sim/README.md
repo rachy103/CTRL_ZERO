@@ -113,6 +113,8 @@ python -B .\sim\build_map.py --preview-only
 - `hardware.drive.zero_pwm_behavior`: PWM 0에서 실제 동작이 관성 주행이면 `coast`, 능동 제동이면 `brake`
 - `hardware.drive.coast_deceleration_mps2`: `zero_pwm_behavior`가 `coast`일 때 측정한 자연 감속도
 
+현재 `zero_pwm_behavior`는 사용자 확인에 따라 `brake`로 기록했습니다.
+
 `pwm_speed_table`은 PWM 오름차순으로 적고, 각 속도는 같은 조건에서 측정한 값이어야 합니다. 현재 펌웨어에서 확인된 PWM 범위와 deadband를 기준으로 다음 조건을 모두 만족해야 합니다.
 
 - 첫 행은 PWM `-255`의 실측 후진 속도, 마지막 행은 PWM `255`의 실측 전진 속도입니다.

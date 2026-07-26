@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "status": "measured_piecewise_reshape",
-  "source": "assets/source/vehicle_mesh/amg_gt_r_source.blend",
+  "status": "prius_piecewise_reshape",
+  "source": "prius_hybrid/prius_hybrid/meshes/hybrid_body.obj",
   "coordinate_frame": {
     "origin": "rear_axle_center",
     "x": "forward",
@@ -22,233 +22,102 @@
     "wheel_width": 0.08
   },
   "source_landmarks": {
-    "rear_end": -2.4618163108825684,
-    "rear_axle": -1.3429160118103027,
-    "front_axle": 1.5137145519256592,
-    "front_end": 2.482966423034668,
-    "body_envelope_width": 2.2524240016937256,
-    "wheel_ground_z": -0.7269645929336548,
-    "body_top_z": 0.649519145488739
+    "rear_end": -2.34916901,
+    "rear_axle": -1.45,
+    "front_axle": 1.41,
+    "front_end": 2.26912003,
+    "wheel_center_z": 0.3
   },
   "reshape": {
     "longitudinal": "piecewise linear through rear end, rear axle, front axle, front end",
-    "body_lateral_scale": 0.2441813795210954,
-    "body_vertical_scale": 0.297860402237593,
-    "wheel_policy": "each source wheel assembly independently centered and scaled to measured radius and width",
-    "modifier_policy": "apply every source modifier before export; decimate only after conversion with per-object limits"
+    "body_lateral_scale": 0.2733133722473269,
+    "body_vertical_scale": 0.267078170288885,
+    "wheel_radius_scale": 0.31384062570830257,
+    "wheel_width_scale": 0.2968724377357376
   },
   "materials": {
-    "white": {
+    "body": {
       "rgba": [
-        0.92,
-        0.94,
-        0.97,
+        1.0,
+        1.0,
+        1.0,
         1.0
-      ]
+      ],
+      "texture": "prius_hybrid/prius_hybrid/materials/textures/Hybrid.png"
     },
-    "black": {
+    "interior": {
       "rgba": [
-        0.025,
-        0.025,
-        0.03,
+        1.0,
+        1.0,
+        1.0,
         1.0
-      ]
+      ],
+      "texture": "prius_hybrid/prius_hybrid/materials/textures/Hybrid_Interior.png"
     },
     "glass": {
       "rgba": [
-        0.1,
+        0.08,
+        0.12,
         0.16,
-        0.2,
-        0.62
+        0.42
       ]
     },
-    "metal": {
+    "wheel": {
       "rgba": [
-        0.55,
-        0.57,
-        0.6,
+        1.0,
+        1.0,
+        1.0,
         1.0
-      ]
-    },
-    "chrome": {
-      "rgba": [
-        0.78,
-        0.8,
-        0.83,
-        1.0
-      ]
-    },
-    "red": {
-      "rgba": [
-        0.72,
-        0.015,
-        0.02,
-        1.0
-      ]
-    },
-    "light": {
-      "rgba": [
-        0.78,
-        0.72,
-        0.5,
-        1.0
-      ]
-    },
-    "tire": {
-      "rgba": [
-        0.018,
-        0.018,
-        0.022,
-        1.0
-      ]
+      ],
+      "texture": "prius_hybrid/prius_hybrid/materials/textures/Wheels3.png"
     }
   },
   "body_meshes": [
     {
-      "file": "assets/generated/vehicle_mesh/body_black.obj",
-      "material": "black",
-      "triangle_count": 322831
+      "file": "assets/generated/vehicle_mesh_prius/body.obj",
+      "material": "body",
+      "triangle_count": 500
     },
     {
-      "file": "assets/generated/vehicle_mesh/body_chrome.obj",
-      "material": "chrome",
-      "triangle_count": 80424
+      "file": "assets/generated/vehicle_mesh_prius/interior.obj",
+      "material": "interior",
+      "triangle_count": 1106
     },
     {
-      "file": "assets/generated/vehicle_mesh/body_glass.obj",
+      "file": "assets/generated/vehicle_mesh_prius/glass.obj",
       "material": "glass",
-      "triangle_count": 13577
-    },
-    {
-      "file": "assets/generated/vehicle_mesh/body_light.obj",
-      "material": "light",
-      "triangle_count": 5799
-    },
-    {
-      "file": "assets/generated/vehicle_mesh/body_metal.obj",
-      "material": "metal",
-      "triangle_count": 34406
-    },
-    {
-      "file": "assets/generated/vehicle_mesh/body_red.obj",
-      "material": "red",
-      "triangle_count": 23610
-    },
-    {
-      "file": "assets/generated/vehicle_mesh/body_white.obj",
-      "material": "white",
-      "triangle_count": 61937
+      "triangle_count": 70
     }
   ],
   "wheel_meshes": {
     "front_left_wheel": [
       {
-        "file": "assets/generated/vehicle_mesh/front_left_wheel_black.obj",
-        "material": "black",
-        "triangle_count": 12310
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/front_left_wheel_chrome.obj",
-        "material": "chrome",
-        "triangle_count": 360
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/front_left_wheel_metal.obj",
-        "material": "metal",
-        "triangle_count": 16000
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/front_left_wheel_tire.obj",
-        "material": "tire",
-        "triangle_count": 7739
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/front_left_wheel_white.obj",
-        "material": "white",
-        "triangle_count": 329
+        "file": "assets/generated/vehicle_mesh_prius/wheel.obj",
+        "material": "wheel",
+        "triangle_count": 76
       }
     ],
     "front_right_wheel": [
       {
-        "file": "assets/generated/vehicle_mesh/front_right_wheel_black.obj",
-        "material": "black",
-        "triangle_count": 12310
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/front_right_wheel_chrome.obj",
-        "material": "chrome",
-        "triangle_count": 360
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/front_right_wheel_metal.obj",
-        "material": "metal",
-        "triangle_count": 16000
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/front_right_wheel_tire.obj",
-        "material": "tire",
-        "triangle_count": 7739
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/front_right_wheel_white.obj",
-        "material": "white",
-        "triangle_count": 329
+        "file": "assets/generated/vehicle_mesh_prius/wheel.obj",
+        "material": "wheel",
+        "triangle_count": 76
       }
     ],
     "rear_left_wheel": [
       {
-        "file": "assets/generated/vehicle_mesh/rear_left_wheel_black.obj",
-        "material": "black",
-        "triangle_count": 12310
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/rear_left_wheel_chrome.obj",
-        "material": "chrome",
-        "triangle_count": 360
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/rear_left_wheel_metal.obj",
-        "material": "metal",
-        "triangle_count": 16000
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/rear_left_wheel_tire.obj",
-        "material": "tire",
-        "triangle_count": 7739
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/rear_left_wheel_white.obj",
-        "material": "white",
-        "triangle_count": 329
+        "file": "assets/generated/vehicle_mesh_prius/wheel.obj",
+        "material": "wheel",
+        "triangle_count": 76
       }
     ],
     "rear_right_wheel": [
       {
-        "file": "assets/generated/vehicle_mesh/rear_right_wheel_black.obj",
-        "material": "black",
-        "triangle_count": 12310
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/rear_right_wheel_chrome.obj",
-        "material": "chrome",
-        "triangle_count": 360
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/rear_right_wheel_metal.obj",
-        "material": "metal",
-        "triangle_count": 16000
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/rear_right_wheel_tire.obj",
-        "material": "tire",
-        "triangle_count": 7739
-      },
-      {
-        "file": "assets/generated/vehicle_mesh/rear_right_wheel_white.obj",
-        "material": "white",
-        "triangle_count": 329
+        "file": "assets/generated/vehicle_mesh_prius/wheel.obj",
+        "material": "wheel",
+        "triangle_count": 76
       }
     ]
   },
-  "triangle_count": 689536
+  "triangle_count": 1980
 }

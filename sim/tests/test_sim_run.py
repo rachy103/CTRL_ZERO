@@ -62,6 +62,7 @@ def _measured_config(*, zero_pwm_behavior: str = "brake") -> dict[str, Any]:
                     [8, 0.0],
                     [255, 2.00],
                 ],
+                "speed_response_mode": "rate_limited",
                 "acceleration_limit_mps2": 2.0,
                 "braking_deceleration_mps2": 4.0,
                 "zero_pwm_behavior": zero_pwm_behavior,
@@ -99,6 +100,12 @@ def _spawn_args(
     )
 
 
+def test_parser_accepts_onboard_view() -> None:
+    args = sim_run.build_parser().parse_args(["--view", "onboard"])
+
+    assert args.view == "onboard"
+
+
 def _manual_control() -> sim_run.ManualControl:
     return sim_run.ManualControl(sim_run.build_real_drive_controller())
 
@@ -116,6 +123,7 @@ def test_validate_config_accepts_complete_measured_drive_schema() -> None:
     [
         "hardware.drive.driven_axle",
         "hardware.drive.pwm_speed_table",
+        "hardware.drive.speed_response_mode",
         "hardware.drive.acceleration_limit_mps2",
         "hardware.drive.braking_deceleration_mps2",
         "hardware.drive.zero_pwm_behavior",
@@ -145,6 +153,15 @@ def test_validate_config_requires_coast_measurement_only_for_coast() -> None:
         match="hardware.drive.coast_deceleration_mps2",
     ):
         sim_run._validate_config(coast_config, auto=False)
+
+
+def test_validate_config_accepts_instantaneous_response_without_rate_values() -> None:
+    config = _measured_config()
+    config["hardware"]["drive"]["speed_response_mode"] = "instantaneous"
+    config["hardware"]["drive"]["acceleration_limit_mps2"] = None
+    config["hardware"]["drive"]["braking_deceleration_mps2"] = None
+
+    sim_run._validate_config(config, auto=False)
 
 
 def test_validate_build_config_does_not_require_steering_hardware() -> None:
@@ -270,7 +287,7 @@ def test_validate_auto_camera_config_rejects_invalid_measurements(
         sim_run._validate_auto_camera_config(config)
 
 
-def test_manual_control_first_d_only_opens_main_start_gate() -> None:
+def test_manual_control_first_arrow_arms_and_applies_command() -> None:
     manual = _manual_control()
 
     assert manual.speed_step == real_main.MANUAL_SPEED_STEP
@@ -281,77 +298,82 @@ def test_manual_control_first_d_only_opens_main_start_gate() -> None:
     assert manual.min_speed == real_main.MIN_SPEED
     assert manual.max_speed == real_main.MAX_SPEED
     assert manual.max_steer == real_main.MAX_STEER
-    assert ord("D") in real_main.START_KEYS
-
     manual.on_key(ord("W"))
     assert manual.manual_speed == 0
     assert not manual.drive_started
 
-    manual.on_key(ord("D"))
+    manual.on_key(sim_run.ManualControl.KEY_UP)
     assert manual.drive_started
-    assert manual.manual_speed == 0
+    assert manual.manual_speed == real_main.MANUAL_SPEED_STEP
     assert manual.manual_steer == 0
     command = manual.command()
-    assert (command.steer, command.speed) == (0, 0)
+    assert (command.steer, command.speed) == (
+        0,
+        real_main.MANUAL_SPEED_STEP,
+    )
 
 
-def test_manual_control_w_and_s_follow_main_step_and_limits() -> None:
+def test_manual_control_up_and_down_follow_main_step_and_limits() -> None:
     manual = _manual_control()
-    manual.on_key(ord("D"))
+    manual.on_key(sim_run.ManualControl.KEY_ENTER)
 
-    manual.on_key(ord("W"))
+    manual.on_key(sim_run.ManualControl.KEY_UP)
     assert manual.manual_speed == real_main.MANUAL_SPEED_STEP
     assert manual.command().speed == real_main.MANUAL_SPEED_STEP
 
     for _ in range(100):
-        manual.on_key(ord("W"))
+        manual.on_key(sim_run.ManualControl.KEY_UP)
     assert manual.manual_speed == real_main.MAX_SPEED
     assert manual.command().speed == real_main.MAX_SPEED
 
-    manual.on_key(ord("S"))
+    manual.on_key(sim_run.ManualControl.KEY_DOWN)
     assert manual.manual_speed == (
         real_main.MAX_SPEED - real_main.MANUAL_SPEED_STEP
     )
     for _ in range(100):
-        manual.on_key(ord("S"))
+        manual.on_key(sim_run.ManualControl.KEY_DOWN)
     assert manual.manual_speed == -real_main.MAX_SPEED
     assert manual.command().speed == -real_main.MAX_SPEED
 
 
-def test_manual_control_a_d_and_c_follow_main_steering_pulse(
+def test_manual_control_ignores_mujoco_w_and_s_viewer_shortcuts() -> None:
+    manual = _manual_control()
+    manual.on_key(sim_run.ManualControl.KEY_ENTER)
+
+    manual.on_key(ord("W"))
+    manual.on_key(ord("S"))
+
+    assert manual.manual_speed == 0
+    assert manual.command().speed == 0
+
+
+def test_manual_control_left_and_right_follow_main_steering_pulse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     now = 123.0
     monkeypatch.setattr(sim_run.time, "monotonic", lambda: now)
     manual = _manual_control()
-    manual.on_key(ord("D"))
+    manual.on_key(sim_run.ManualControl.KEY_ENTER)
     expected_power = min(
         max(real_main.MANUAL_STEER_POWER, 0),
         real_main.MAX_STEER,
     )
 
-    manual.on_key(ord("A"))
+    manual.on_key(sim_run.ManualControl.KEY_LEFT)
     assert manual.manual_steer == -expected_power
     assert manual.manual_steer_until == pytest.approx(
         now + real_main.MANUAL_STEER_HOLD_MS / 1000.0
     )
     assert manual.command().steer == -expected_power
 
-    manual.on_key(ord("D"))
+    manual.on_key(sim_run.ManualControl.KEY_RIGHT)
     assert manual.manual_steer == expected_power
     assert manual.command().steer == expected_power
 
-    manual.on_key(ord("C"))
-    assert manual.manual_steer == 0
-    assert manual.manual_steer_until == 0.0
-    assert manual.command().steer == 0
-
-
 def test_manual_control_space_stops_and_arms_manual_takeover() -> None:
     manual = _manual_control()
-    manual.on_key(ord("D"))
-    manual.on_key(ord("W"))
-    manual.on_key(ord("A"))
+    manual.on_key(sim_run.ManualControl.KEY_UP)
+    manual.on_key(sim_run.ManualControl.KEY_LEFT)
     assert manual.manual_speed != 0
     assert manual.manual_steer != 0
 
