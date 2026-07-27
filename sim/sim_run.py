@@ -705,10 +705,14 @@ class TimedParkingControl:
         def pwm_speed(pwm: float) -> float:
             return top_speed * (abs(pwm) - deadband) / (top_pwm - deadband)
 
-        self.mission = real_main.build_timed_parking_mission(marker)
+        # One parameter set covers every start marker: marker rows are
+        # absorbed by the second-car trigger and marker columns by the
+        # LiDAR-stopped straight reverse (the 90 deg rotation swaps the
+        # offset axes). The south (closest) column sizes the swing angle.
+        self.mission = real_main.build_timed_parking_mission()
         mission_config = self.mission.config
         plan = parking_scenario.timed_plan(
-            marker,
+            1,  # south sizing marker; see comment above
             wheelbase_m=float(get_value(config, "vehicle.wheelbase_m")),
             front_track_m=float(get_value(config, "vehicle.front_track_m")),
             max_steer_deg=float(
@@ -721,8 +725,8 @@ class TimedParkingControl:
                 mission_config.detect_hold_s + 0.5 / self.scan_rate_hz
             ),
             # Simulation-calibrated centering trim (cone-entry offset and
-            # steering slew transients), measured per start column.
-            approach_trim_s=0.16 if marker in (1, 3) else 0.26,
+            # steering slew transients).
+            approach_trim_s=0.16,
         )
         print(
             "TIMED_PLAN(derived) "
