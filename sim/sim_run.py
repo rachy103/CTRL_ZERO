@@ -52,6 +52,8 @@ try:
     )
     from .model_builder import build_models
     from .vehicle_kinematics import KinematicCalibration, KinematicVehicle
+    from .lidar_sim import simulate_scan
+    from . import parking_scenario
 except ImportError:  # Direct execution: python -B sim/sim_run.py
     from build_map import build_map_assets
     from config import (
@@ -71,6 +73,8 @@ except ImportError:  # Direct execution: python -B sim/sim_run.py
     )
     from model_builder import build_models
     from vehicle_kinematics import KinematicCalibration, KinematicVehicle
+    from lidar_sim import simulate_scan
+    import parking_scenario
 
 
 def build_real_drive_controller():
@@ -475,6 +479,364 @@ class AutoLaneControl:
         return self.last_command
 
 
+PARKING_LIDAR_REQUIRED = (
+    "hardware.lidar.position_from_rear_axle_m",
+    "hardware.lidar.raw_angle_for_ros_zero_deg",
+    "hardware.lidar.range_max_mm",
+    "hardware.lidar.angular_step_deg",
+)
+
+
+class ParkingControl:
+    """Drive main.py's ParkingHardMission from a simulated LiDAR scan."""
+
+    def __init__(
+        self,
+        config: dict[str, Any],
+        case: int,
+        *,
+        reverse_steer_override: int | None = None,
+        search_overrun_s: float = 0.0,
+        side_detect_mm_override: float | None = None,
+    ):
+        import main as real_main
+        from ctrl_zero.parking_hard import (
+            ParkingHardConfig,
+            ParkingHardMission,
+        )
+
+        # Tuning experiments only touch the simulation; main.py stays intact.
+        self.search_overrun_s = float(search_overrun_s)
+        self.search_cleared_time: float | None = None
+        self.reverse_straight_max_s: float | None = None
+        self.last_command = None
+        self.last_scan_time = -float("inf")
+
+        for dotted_key in PARKING_LIDAR_REQUIRED:
+            if not is_known(get_value(config, dotted_key)):
+                raise ConfigurationError(
+                    f"{dotted_key} requires a measured value; null is not allowed."
+                )
+        position = get_value(config, "hardware.lidar.position_from_rear_axle_m")
+        if not isinstance(position, (list, tuple)) or len(position) != 2:
+            raise ConfigurationError(
+                "hardware.lidar.position_from_rear_axle_m must be "
+                "[forward_m, left_m] from the rear axle center."
+            )
+        self.lidar_forward_m = float(position[0])
+        self.lidar_left_m = float(position[1])
+        self.raw_zero_deg = float(
+            get_value(config, "hardware.lidar.raw_angle_for_ros_zero_deg")
+        )
+        self.range_max_mm = float(get_value(config, "hardware.lidar.range_max_mm"))
+        self.step_deg = float(get_value(config, "hardware.lidar.angular_step_deg"))
+        self.scan_rate_hz = float(get_value(config, "hardware.lidar.scan_rate_hz"))
+        self.obstacles = parking_scenario.obstacle_rects(case)
+        self.mission = ParkingHardMission(
+            ParkingHardConfig(
+                enabled=True,
+                raw_angle_for_ros_zero_deg=(
+                    real_main.LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG
+                ),
+                search_sector_ros_deg=real_main.PARKING_SEARCH_SECTOR_ROS_DEG,
+                left_sector_ros_deg=real_main.PARKING_LEFT_SECTOR_ROS_DEG,
+                right_sector_ros_deg=real_main.PARKING_RIGHT_SECTOR_ROS_DEG,
+                search_detect_mm=real_main.PARKING_SEARCH_DETECT_MM,
+                side_detect_mm=(
+                    real_main.PARKING_SIDE_DETECT_MM
+                    if side_detect_mm_override is None
+                    else float(side_detect_mm_override)
+                ),
+                go_out_detect_mm=real_main.PARKING_GO_OUT_DETECT_MM,
+                detect_frames=real_main.PARKING_DETECT_FRAMES,
+                clear_frames=real_main.PARKING_CLEAR_FRAMES,
+                init_steer=real_main.PARKING_INIT_STEER,
+                straight_steer=real_main.PARKING_STRAIGHT_STEER,
+                first_stop_steer=real_main.PARKING_FIRST_STOP_STEER,
+                reverse_right_steer=(
+                    real_main.PARKING_INIT_STEER
+                    if reverse_steer_override is None
+                    else int(reverse_steer_override)
+                ),
+                go_out_turn_steer=real_main.PARKING_GO_OUT_TURN_STEER,
+                go_out_straight_steer=real_main.PARKING_STRAIGHT_STEER,
+                centering_deadband_mm=real_main.PARKING_CENTERING_DEADBAND_MM,
+                centering_steer=real_main.PARKING_CENTERING_STEER,
+                search_speed=real_main.PARKING_SEARCH_SPEED,
+                reverse_right_speed=real_main.PARKING_REVERSE_RIGHT_SPEED,
+                reverse_straight_speed=real_main.PARKING_REVERSE_STRAIGHT_SPEED,
+                adjust_forward_speed=real_main.PARKING_ADJUST_FORWARD_SPEED,
+                go_out_turn_speed=real_main.PARKING_GO_OUT_TURN_SPEED,
+                go_out_straight_speed=real_main.PARKING_GO_OUT_STRAIGHT_SPEED,
+                first_stop_seconds=real_main.PARKING_FIRST_STOP_SECONDS,
+                reverse_pause_seconds=real_main.PARKING_REVERSE_PAUSE_SECONDS,
+                adjust_forward_min_seconds=(
+                    real_main.PARKING_ADJUST_FORWARD_MIN_SECONDS
+                ),
+                go_out_turn_min_seconds=(
+                    real_main.PARKING_GO_OUT_TURN_MIN_SECONDS
+                ),
+            )
+        )
+        self.last_state_name = self.mission.state.name
+
+    def command(self, data: Any, vehicle_state: Any):
+        now = float(data.time)
+        if (
+            self.last_command is not None
+            and now - self.last_scan_time < 1.0 / self.scan_rate_hz
+        ):
+            return self.last_command
+        self.last_scan_time = now
+        yaw = float(vehicle_state.yaw_rad)
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        lidar_x = (
+            float(vehicle_state.rear_axle_x_m)
+            + cos_yaw * self.lidar_forward_m
+            - sin_yaw * self.lidar_left_m
+        )
+        lidar_y = (
+            float(vehicle_state.rear_axle_y_m)
+            + sin_yaw * self.lidar_forward_m
+            + cos_yaw * self.lidar_left_m
+        )
+        scan = simulate_scan(
+            lidar_x,
+            lidar_y,
+            yaw,
+            self.obstacles,
+            raw_angle_for_ros_zero_deg=self.raw_zero_deg,
+            angular_step_deg=self.step_deg,
+            range_max_mm=self.range_max_mm,
+        )
+        command = self.mission.step(scan, now_s=now)
+        command = self._apply_search_overrun(command, now)
+        command = self._apply_reverse_straight_cap(command, now)
+        self.last_command = command
+        state_name = self.mission.state.name
+        if state_name != self.last_state_name:
+            print(
+                f"PARKING_STATE t={float(data.time):7.2f}s "
+                f"{self.last_state_name} -> {state_name} "
+                f"x={vehicle_state.rear_axle_x_m:+7.3f} "
+                f"y={vehicle_state.rear_axle_y_m:+7.3f} "
+                f"yaw={math.degrees(yaw):+7.2f}deg",
+                flush=True,
+            )
+            self.last_state_name = state_name
+        return command
+
+    def _apply_search_overrun(self, command, now_s: float):
+        """Prototype of a proposed main.py change: keep driving for a fixed
+        time after the second parked car clears, so the reverse arc starts
+        far enough past the target bay. Holds the mission in FIRST_STOP by
+        freezing its timer while substituting the search drive command."""
+        from ctrl_zero.control import DriveCommand
+        from ctrl_zero.parking_hard import ParkingHardState
+
+        if self.search_overrun_s <= 0.0:
+            return command
+        if self.mission.state != ParkingHardState.FIRST_STOP:
+            return command
+        if self.search_cleared_time is None:
+            self.search_cleared_time = now_s
+        if now_s - self.search_cleared_time < self.search_overrun_s:
+            self.mission.state_start_s = now_s
+            return DriveCommand(
+                steer=self.mission.config.straight_steer,
+                speed=self.mission.config.search_speed,
+                reason="parking_search_overrun",
+            )
+        return command
+
+    def _apply_reverse_straight_cap(self, command, now_s: float):
+        """Prototype of a proposed main.py change: the reverse arc already
+        ends at the correct bay depth, so bound REVERSE_STRAIGHT by time
+        instead of waiting for the front-mounted LiDAR to clear both
+        neighbors (which reverses the whole car past the bay)."""
+        from ctrl_zero.parking_hard import ParkingHardState
+
+        if self.reverse_straight_max_s is None:
+            return command
+        if self.mission.state != ParkingHardState.REVERSE_STRAIGHT:
+            return command
+        if now_s - self.mission.state_start_s >= self.reverse_straight_max_s:
+            self.mission._enter(ParkingHardState.REVERSE_PAUSE, now_s)
+        return command
+
+
+class TimedParkingControl:
+    """Timed two-arc parking driven by main.py's ``TimedParkingMission`` —
+    the exact object the real car runs in ``--mode parking_sim`` — fed with
+    simulated LiDAR scans at the sensor rate.
+
+    ``parking_scenario.timed_plan`` re-derives the closed-form segment times
+    from the calibrated geometry and is printed next to main.py's configured
+    constants so any drift between the two is visible.
+    """
+
+    def __init__(self, config: dict[str, Any], case: int, marker: int):
+        import main as real_main
+
+        for dotted_key in PARKING_LIDAR_REQUIRED:
+            if not is_known(get_value(config, dotted_key)):
+                raise ConfigurationError(
+                    f"{dotted_key} requires a measured value; null is not allowed."
+                )
+        position = get_value(config, "hardware.lidar.position_from_rear_axle_m")
+        self.lidar_forward_m = float(position[0])
+        self.lidar_left_m = float(position[1])
+        self.raw_zero_deg = float(
+            get_value(config, "hardware.lidar.raw_angle_for_ros_zero_deg")
+        )
+        self.range_max_mm = float(get_value(config, "hardware.lidar.range_max_mm"))
+        self.step_deg = float(get_value(config, "hardware.lidar.angular_step_deg"))
+        self.scan_rate_hz = float(get_value(config, "hardware.lidar.scan_rate_hz"))
+        self.obstacles = parking_scenario.obstacle_rects(case)
+
+        pwm_table = get_value(config, "hardware.drive.pwm_speed_table")
+        top_speed = float(pwm_table[-1][1])
+        top_pwm = float(pwm_table[-1][0])
+        deadband = float(
+            get_value(config, "hardware.command.drive_pwm_deadband")
+        )
+
+        def pwm_speed(pwm: float) -> float:
+            return top_speed * (abs(pwm) - deadband) / (top_pwm - deadband)
+
+        self.mission = real_main.build_timed_parking_mission(marker)
+        mission_config = self.mission.config
+        plan = parking_scenario.timed_plan(
+            marker,
+            wheelbase_m=float(get_value(config, "vehicle.wheelbase_m")),
+            front_track_m=float(get_value(config, "vehicle.front_track_m")),
+            max_steer_deg=float(
+                get_value(config, "hardware.steering.right_angle_deg_at_steer_max")
+            ),
+            v_forward_mps=pwm_speed(mission_config.forward_speed),
+            v_reverse_mps=pwm_speed(abs(mission_config.reverse_speed)),
+            lidar_forward_m=self.lidar_forward_m,
+            trigger_latency_s=(
+                mission_config.detect_hold_s + 0.5 / self.scan_rate_hz
+            ),
+            # Simulation-calibrated centering trim (cone-entry offset and
+            # steering slew transients), measured per start column.
+            approach_trim_s=0.16 if marker in (1, 3) else 0.26,
+        )
+        print(
+            "TIMED_PLAN(derived) "
+            + " ".join(f"{key}={value:.2f}" for key, value in plan.items()),
+            flush=True,
+        )
+        print(
+            "TIMED_MAIN(config)  "
+            f"approach_s={mission_config.approach_s:.2f} "
+            f"swing_s={mission_config.swing_s:.2f} "
+            f"arc_s={mission_config.arc_s:.2f}",
+            flush=True,
+        )
+        self.last_state_name = self.mission.state.name
+        self.last_scan = None
+        self.last_scan_time = -float("inf")
+        self.parked_pose: tuple[float, float, float] | None = None
+
+    def command(self, data: Any, vehicle_state: Any):
+        now = float(data.time)
+        # Regenerate the scan at the sensor rate; between scans the mission
+        # sees the latest scan, exactly like the real main.py loop.
+        if now - self.last_scan_time >= 1.0 / self.scan_rate_hz:
+            self.last_scan_time = now
+            yaw = float(vehicle_state.yaw_rad)
+            cos_yaw = math.cos(yaw)
+            sin_yaw = math.sin(yaw)
+            lidar_x = (
+                float(vehicle_state.rear_axle_x_m)
+                + cos_yaw * self.lidar_forward_m
+                - sin_yaw * self.lidar_left_m
+            )
+            lidar_y = (
+                float(vehicle_state.rear_axle_y_m)
+                + sin_yaw * self.lidar_forward_m
+                + cos_yaw * self.lidar_left_m
+            )
+            self.last_scan = simulate_scan(
+                lidar_x,
+                lidar_y,
+                yaw,
+                self.obstacles,
+                raw_angle_for_ros_zero_deg=self.raw_zero_deg,
+                angular_step_deg=self.step_deg,
+                range_max_mm=self.range_max_mm,
+            )
+
+        command = self.mission.step(self.last_scan, now_s=now)
+        state_name = self.mission.state.name
+        if state_name != self.last_state_name:
+            print(
+                f"PARKING_PHASE t={now:7.2f}s "
+                f"{self.last_state_name} -> {state_name} "
+                f"x={vehicle_state.rear_axle_x_m:+7.3f} "
+                f"y={vehicle_state.rear_axle_y_m:+7.3f} "
+                f"yaw={math.degrees(vehicle_state.yaw_rad):+7.2f}deg",
+                flush=True,
+            )
+            if state_name == "DONE":
+                self.parked_pose = (
+                    float(vehicle_state.rear_axle_x_m),
+                    float(vehicle_state.rear_axle_y_m),
+                    math.degrees(float(vehicle_state.yaw_rad)),
+                )
+                print(
+                    f"PARKED t={now:7.2f}s x={self.parked_pose[0]:+7.3f} "
+                    f"y={self.parked_pose[1]:+7.3f} "
+                    f"yaw={self.parked_pose[2]:+7.2f}deg",
+                    flush=True,
+                )
+            self.last_state_name = state_name
+        return command
+
+
+def _write_parking_world(world_path: Path, case: int) -> Path:
+    """Copy the generated world and add the obstacle-car boxes for one case."""
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(world_path)
+    worldbody = tree.getroot().find("worldbody")
+    if worldbody is None:
+        raise ConfigurationError(f"Generated world has no worldbody: {world_path}")
+    for index, rect in enumerate(parking_scenario.obstacle_rects(case), start=1):
+        # Obstacles are parked at exactly yaw 90 deg, so the oriented
+        # footprint is expressed by swapping the box half-sizes.
+        ET.SubElement(
+            worldbody,
+            "geom",
+            {
+                "name": f"parking_obstacle_{index}",
+                "type": "box",
+                "pos": f"{rect.center_x} {rect.center_y} 0.205",
+                "size": f"{rect.width_m / 2.0} {rect.length_m / 2.0} 0.205",
+                "rgba": "0.93 0.93 0.96 1",
+                "contype": "0",
+                "conaffinity": "0",
+            },
+        )
+    destination = world_path.with_name(f"world_parking_case{case}.xml")
+    tree.write(destination)
+    return destination
+
+
+def _apply_parking_spawn(config: dict[str, Any], marker: int) -> None:
+    pose = parking_scenario.start_pose(
+        marker,
+        float(get_value(config, "vehicle.wheelbase_m")),
+        float(get_value(config, "vehicle.front_track_m")),
+    )
+    set_value(config, "map.spawn.rear_axle_x_m", pose.rear_axle_x_m)
+    set_value(config, "map.spawn.rear_axle_y_m", pose.rear_axle_y_m)
+    set_value(config, "map.spawn.yaw_deg", math.degrees(pose.yaw_rad))
+
+
 def _apply_spawn_overrides(config: dict[str, Any], args: argparse.Namespace) -> None:
     provided = (args.spawn_x, args.spawn_y, args.spawn_yaw_deg)
     if any(value is not None for value in provided) and not all(
@@ -576,10 +938,19 @@ def _run_loop(
     explicit_steer: int | None,
     explicit_pwm: int | None,
     auto_start: bool,
+    parking_case: int = 1,
+    parking_reverse_steer: int | None = None,
+    parking_search_overrun_s: float = 0.0,
+    parking_reverse_straight_max_s: float | None = None,
+    parking_side_detect_mm: float | None = None,
+    parking_strategy: str = "mission",
+    parking_start: int = 1,
 ) -> int:
     import mujoco
 
     world_path = _prepare_assets(config)
+    if mode == "parking":
+        world_path = _write_parking_world(world_path, parking_case)
     model = mujoco.MjModel.from_xml_path(str(world_path))
     data = mujoco.MjData(model)
     calibration = KinematicCalibration.from_config(config)
@@ -595,8 +966,20 @@ def _run_loop(
     controller = build_real_drive_controller()
     manual = ManualControl(controller)
     auto_control = None
+    parking_control = None
     if mode == "auto":
         auto_control = AutoLaneControl(config, model, controller)
+    elif mode == "parking" and parking_strategy == "timed":
+        parking_control = TimedParkingControl(config, parking_case, parking_start)
+    elif mode == "parking":
+        parking_control = ParkingControl(
+            config,
+            parking_case,
+            reverse_steer_override=parking_reverse_steer,
+            search_overrun_s=parking_search_overrun_s,
+            side_detect_mm_override=parking_side_detect_mm,
+        )
+        parking_control.reverse_straight_max_s = parking_reverse_straight_max_s
 
     if (explicit_steer is None) != (explicit_pwm is None):
         raise ConfigurationError(
@@ -615,6 +998,12 @@ def _run_loop(
         nonlocal completed_steps, next_status_time
         if auto_control is not None and manual.drive_started and not manual.manual_takeover:
             command = auto_control.command(data)
+        elif (
+            parking_control is not None
+            and manual.drive_started
+            and not manual.manual_takeover
+        ):
+            command = parking_control.command(data, vehicle.state)
         else:
             command = manual.command()
         vehicle.set_command(command.steer, command.speed)
@@ -688,7 +1077,66 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--mode", choices=("manual", "auto"), default="manual")
+    parser.add_argument(
+        "--mode", choices=("manual", "auto", "parking"), default="manual"
+    )
+    parser.add_argument(
+        "--parking-case",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="Obstacle-car layout: 1 = cars in bays 2 and 4, 2 = bays 1 and 3.",
+    )
+    parser.add_argument(
+        "--parking-start",
+        type=int,
+        choices=(1, 2, 3, 4),
+        default=1,
+        help="Start marker 1-4 (contest 30 cm grid near the entry line).",
+    )
+    parser.add_argument(
+        "--parking-reverse-steer",
+        type=int,
+        help=(
+            "Simulation-only override of the REVERSE_RIGHT steer command "
+            "(main.py uses PARKING_INIT_STEER)."
+        ),
+    )
+    parser.add_argument(
+        "--parking-search-overrun-s",
+        type=float,
+        default=0.0,
+        help=(
+            "Simulation-only prototype: keep driving this many seconds after "
+            "the second parked car clears before the first stop."
+        ),
+    )
+    parser.add_argument(
+        "--parking-reverse-straight-max-s",
+        type=float,
+        help=(
+            "Simulation-only prototype: bound REVERSE_STRAIGHT by time instead "
+            "of waiting for both side sectors to clear."
+        ),
+    )
+    parser.add_argument(
+        "--parking-side-detect-mm",
+        type=float,
+        help=(
+            "Simulation-only override of PARKING_SIDE_DETECT_MM (side-sector "
+            "detection threshold during the reverse arc)."
+        ),
+    )
+    parser.add_argument(
+        "--parking-strategy",
+        choices=("mission", "timed"),
+        default="mission",
+        help=(
+            "mission = main.py's LiDAR-reactive ParkingHardMission; timed = "
+            "closed-form two-arc plan (swing left, reverse right, straight "
+            "back until both side sectors detect)."
+        ),
+    )
     parser.add_argument(
         "--view",
         choices=("overhead", "onboard"),
@@ -715,7 +1163,15 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         config = load_config(args.config)
+        if args.mode == "parking" and args.spawn_x is None:
+            _apply_parking_spawn(config, args.parking_start)
         _apply_spawn_overrides(config, args)
+        if args.mode == "parking":
+            for dotted_key in PARKING_LIDAR_REQUIRED:
+                if not is_known(get_value(config, dotted_key)):
+                    raise ConfigurationError(
+                        f"{dotted_key} requires a measured value; null is not allowed."
+                    )
         if args.validate:
             return _print_validation(config, auto=args.mode == "auto")
         if args.build_only:
@@ -732,8 +1188,10 @@ def main() -> int:
             raise ConfigurationError(
                 "Explicit command injection is only available in manual mode."
             )
-        if args.auto_start and args.mode != "auto":
-            raise ConfigurationError("--auto-start is only available in auto mode.")
+        if args.auto_start and args.mode not in ("auto", "parking"):
+            raise ConfigurationError(
+                "--auto-start is only available in auto or parking mode."
+            )
         return _run_loop(
             config,
             mode=args.mode,
@@ -743,6 +1201,13 @@ def main() -> int:
             explicit_steer=args.command_steer,
             explicit_pwm=args.command_pwm,
             auto_start=args.auto_start,
+            parking_case=args.parking_case,
+            parking_reverse_steer=args.parking_reverse_steer,
+            parking_search_overrun_s=args.parking_search_overrun_s,
+            parking_reverse_straight_max_s=args.parking_reverse_straight_max_s,
+            parking_side_detect_mm=args.parking_side_detect_mm,
+            parking_strategy=args.parking_strategy,
+            parking_start=args.parking_start,
         )
     except ConfigurationError as exc:
         print(str(exc), file=sys.stderr)

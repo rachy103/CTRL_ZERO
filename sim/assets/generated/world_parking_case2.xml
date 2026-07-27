@@ -1,0 +1,57 @@
+<mujoco model="ctrl_zero_track">
+  <compiler angle="radian" coordinate="local" assetdir="C:\CTRL_ZERO\sim\assets\generated" />
+  <option timestep="0.01" gravity="0 0 -9.81" integrator="RK4" />
+  <statistic center="0 0 0" extent="8.74948805" />
+  <visual>
+    <global offwidth="640" offheight="480" />
+    <headlight ambient="0.55 0.55 0.55" diffuse="0.6 0.6 0.6" />
+    <map znear="0.01" zfar="75.4266212" />
+  </visual>
+  <asset>
+    <texture name="track_texture" type="2d" file="track_texture.png" />
+    <material name="track_material" texture="track_texture" texrepeat="1 1" texuniform="false" reflectance="0" />
+    <material name="body_material" rgba="0.92 0.94 0.97 1" specular="0.35" shininess="0.45" />
+    <material name="tire_material" rgba="0.035 0.035 0.04 1" specular="0.05" shininess="0.1" />
+    <texture name="vehicle_mesh_texture_body" type="2d" file="../../prius_hybrid/prius_hybrid/materials/textures/Hybrid.png" />
+    <material name="vehicle_mesh_material_body" rgba="1 1 1 1" specular="0.25" shininess="0.3" texture="vehicle_mesh_texture_body" texrepeat="1 1" texuniform="false" />
+    <material name="vehicle_mesh_material_glass" rgba="0.08 0.12 0.16 0.42" specular="0.25" shininess="0.3" />
+    <texture name="vehicle_mesh_texture_interior" type="2d" file="../../prius_hybrid/prius_hybrid/materials/textures/Hybrid_Interior.png" />
+    <material name="vehicle_mesh_material_interior" rgba="1 1 1 1" specular="0.25" shininess="0.3" texture="vehicle_mesh_texture_interior" texrepeat="1 1" texuniform="false" />
+    <texture name="vehicle_mesh_texture_wheel" type="2d" file="../../prius_hybrid/prius_hybrid/materials/textures/Wheels3.png" />
+    <material name="vehicle_mesh_material_wheel" rgba="1 1 1 1" specular="0.25" shininess="0.3" texture="vehicle_mesh_texture_wheel" texrepeat="1 1" texuniform="false" />
+    <mesh name="vehicle_mesh_body_0" file="vehicle_mesh_prius/body.obj" />
+    <mesh name="vehicle_mesh_body_1" file="vehicle_mesh_prius/interior.obj" />
+    <mesh name="vehicle_mesh_body_2" file="vehicle_mesh_prius/glass.obj" />
+    <mesh name="vehicle_mesh_front_left_wheel_0" file="vehicle_mesh_prius/wheel.obj" />
+    <mesh name="vehicle_mesh_front_right_wheel_0" file="vehicle_mesh_prius/wheel.obj" />
+    <mesh name="vehicle_mesh_rear_left_wheel_0" file="vehicle_mesh_prius/wheel.obj" />
+    <mesh name="vehicle_mesh_rear_right_wheel_0" file="vehicle_mesh_prius/wheel.obj" />
+  </asset>
+  <worldbody>
+    <light name="sun" directional="true" pos="0 0 10" dir="-0.2 -0.3 -1" diffuse="0.85 0.85 0.85" />
+    <geom name="track_floor" type="plane" size="7.54266212 5.221843 0.02" material="track_material" contype="0" conaffinity="0" />
+    <body name="vehicle_body" mocap="true" pos="0 0 0">
+      <geom name="vehicle_body_mesh_0" type="mesh" mesh="vehicle_mesh_body_0" material="vehicle_mesh_material_body" contype="0" conaffinity="0" />
+      <geom name="vehicle_body_mesh_1" type="mesh" mesh="vehicle_mesh_body_1" material="vehicle_mesh_material_interior" contype="0" conaffinity="0" />
+      <geom name="vehicle_body_mesh_2" type="mesh" mesh="vehicle_mesh_body_2" material="vehicle_mesh_material_glass" contype="0" conaffinity="0" />
+      <site name="rear_axle_origin" type="sphere" pos="0 0 0.01" size="0.012" rgba="0.1 0.4 1 1" />
+      <camera name="onboard" mode="fixed" pos="0.067 0 0.8" xyaxes="0 -1 0 0.292371705 0 0.956304756" fovy="55.7812138" />
+    </body>
+    <body name="front_left_wheel" mocap="true" pos="0 0 0.095624753">
+      <geom name="front_left_wheel_mesh_0" type="mesh" mesh="vehicle_mesh_front_left_wheel_0" material="vehicle_mesh_material_wheel" contype="0" conaffinity="0" />
+      <site name="front_left_wheel_rotation_marker" type="sphere" pos="0 0 0.0621560895" size="0.00717185648" rgba="0.92 0.22 0.12 1" />
+    </body>
+    <body name="front_right_wheel" mocap="true" pos="0 0 0.095624753">
+      <geom name="front_right_wheel_mesh_0" type="mesh" mesh="vehicle_mesh_front_right_wheel_0" material="vehicle_mesh_material_wheel" contype="0" conaffinity="0" />
+      <site name="front_right_wheel_rotation_marker" type="sphere" pos="0 0 0.0621560895" size="0.00717185648" rgba="0.92 0.22 0.12 1" />
+    </body>
+    <body name="rear_left_wheel" mocap="true" pos="0 0 0.095624753">
+      <geom name="rear_left_wheel_mesh_0" type="mesh" mesh="vehicle_mesh_rear_left_wheel_0" material="vehicle_mesh_material_wheel" contype="0" conaffinity="0" />
+      <site name="rear_left_wheel_rotation_marker" type="sphere" pos="0 0 0.0621560895" size="0.00717185648" rgba="0.92 0.22 0.12 1" />
+    </body>
+    <body name="rear_right_wheel" mocap="true" pos="0 0 0.095624753">
+      <geom name="rear_right_wheel_mesh_0" type="mesh" mesh="vehicle_mesh_rear_right_wheel_0" material="vehicle_mesh_material_wheel" contype="0" conaffinity="0" />
+      <site name="rear_right_wheel_rotation_marker" type="sphere" pos="0 0 0.0621560895" size="0.00717185648" rgba="0.92 0.22 0.12 1" />
+    </body>
+  <geom name="parking_obstacle_1" type="box" pos="-0.4021 0.8761 0.205" size="0.275 0.495 0.205" rgba="0.93 0.93 0.96 1" contype="0" conaffinity="0" /><geom name="parking_obstacle_2" type="box" pos="1.4818 0.8761 0.205" size="0.275 0.495 0.205" rgba="0.93 0.93 0.96 1" contype="0" conaffinity="0" /></worldbody>
+</mujoco>

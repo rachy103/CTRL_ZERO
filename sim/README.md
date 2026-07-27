@@ -225,6 +225,52 @@ python -B .\sim\preview_scene.py --interactive
 .\sim\run.ps1 --mode auto --auto-start --headless --steps <step수>
 ```
 
+주차 미션 (수직주차):
+
+```powershell
+.\sim\run.ps1 --mode parking --parking-case <1|2> --parking-start <1..4>
+```
+
+`--parking-case`는 장애물 차량 배치(1=베이 2·4, 2=베이 1·3), `--parking-start`는
+도면에 그려진 3cm 시작 마커 번호입니다. 시뮬레이션은 `hardware.lidar` 실측
+장착값으로 2D LiDAR를 레이캐스트해 main.py의 `ParkingHardMission`에 그대로
+공급합니다. 장애물 차량 박스는 `world_parking_case<case>.xml`에 생성됩니다.
+
+main.py의 현재 주차 상수(`PARKING_INIT_STEER=7`로 후진)는 수직주차 기하에서
+회전이 거의 없어 `REVERSE_RIGHT`에서 교착됩니다. 시뮬레이션 전용 오버라이드로
+검증한 동작 조합은 다음과 같습니다 (main.py는 수정하지 않음).
+
+- 북쪽 열 마커(2, 4): `--parking-reverse-steer 100 --parking-search-overrun-s 4.5`
+- 남쪽 열 마커(1, 3): `--parking-reverse-steer 85 --parking-search-overrun-s 5.6`
+- 공통: `--parking-reverse-straight-max-s 0.5`
+
+`--parking-search-overrun-s`는 두 번째 장애물 차량 통과 후 정지 전에 추가
+전진하는 시간, `--parking-reverse-straight-max-s`는 전방 장착 LiDAR로는 양측
+클리어 조건이 차량 전체가 베이를 관통할 때까지 후진시키므로 직선 후진을
+시간으로 제한하는 프로토타입입니다. 실차 적용은 main.py에 같은 로직을
+반영해야 합니다.
+
+`--parking-strategy timed`는 실차의 `main.py --mode parking_sim`이 사용하는
+`ctrl_zero/parking_timed.py`의 `TimedParkingMission`을 그대로 구동합니다:
+장애물 차량 두 대를 카운트해 두 번째 차량 감지를 기준점으로 → 정해진
+시간만큼 직진 접근 → 풀락 좌회전 전진(θ₁) → 정지(조향 우측 선회 예비) →
+풀락 우회전 후진(θ₂=90°−θ₁) → 직선 후진을 LiDAR 양측(±90°) 감지로 정지.
+두 번째 차량 기준이라 dead-reckoning 구간이 남쪽 열 1.0 m, 북쪽 열 0.3 m
+수준으로 짧아 속도 오차에 강합니다.
+
+구간 시간은 main.py의 `PARKING_SIM_SEGMENTS_BY_COLUMN` 상수(시작 마커
+열별)에서 오며, 시뮬레이션은 실측 기하로 재유도한 값(`timed_plan()`)을
+나란히 출력해 상수와의 어긋남을 드러냅니다. 감지 디바운스는 시간 기반
+(0.2 s hold)이라 실차 카메라 루프 주기와 시뮬레이션 스텝 주기에서 같은
+동작을 합니다. 8개 조합(마커 4 × 케이스 2) 검증 결과 최종 요는 수직
+±1.3° 이내, 베이 중심 대비 x 오차 3.8 cm 이내입니다. 실차 트림은
+main.py 상수 주석의 규칙(치우친 거리 D cm → approach_s를 D/29 s 조정)을
+따릅니다.
+
+```powershell
+.\sim\run.ps1 --mode parking --parking-strategy timed --parking-case <1|2> --parking-start <1..4>
+```
+
 뷰어 없이 정해진 step만 검증할 때는 명시적인 수동 명령을 함께 줍니다.
 
 ```powershell

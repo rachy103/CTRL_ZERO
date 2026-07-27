@@ -14,6 +14,7 @@ from ctrl_zero.lidar import LidarConfig, LidarReader, ObstacleDecision, analyze_
 from ctrl_zero.logger import DriveLogger, LogConfig
 from ctrl_zero.obstacles import ContestObstacleMission, ContestObstacleMissionConfig
 from ctrl_zero.parking_hard import ParkingHardConfig, ParkingHardMission
+from ctrl_zero.parking_timed import TimedParkingConfig, TimedParkingMission
 from ctrl_zero.safety import SafetyDecision, build_safety_decision
 from ctrl_zero.traffic_light import traffic_light_object
 from ctrl_zero.ui import draw_status
@@ -111,6 +112,72 @@ PARKING_FIRST_STOP_SECONDS = 2.0
 PARKING_REVERSE_PAUSE_SECONDS = 4.0
 PARKING_ADJUST_FORWARD_MIN_SECONDS = 3.0
 PARKING_GO_OUT_TURN_MIN_SECONDS = 25.0
+
+# --mode parking_sim: timed two-arc perpendicular parking, validated in the
+# MuJoCo simulation (sim/README.md). After counting both parked cars with the
+# right abeam sector, the car drives straight for approach_s, swings forward
+# full-lock LEFT for swing_s, stops for gear_pause_s (steering pre-turned
+# right), reverses full-lock RIGHT for arc_s, then reverses straight until
+# BOTH +/-90 deg sectors see the neighbouring cars within
+# PARKING_SIDE_DETECT_MM. Segment times depend only on the start-marker
+# column drawn on contest day: markers 1/3 = "south" column (closer to the
+# aisle edge), markers 2/4 = "north" column (closer to the bays). Times were
+# derived from the calibrated two-arc geometry and centered in simulation;
+# re-trim approach_s on the real track: if the car parks D cm toward the
+# entry (right when facing the bay), ADD D/29 seconds, and subtract to move
+# it the other way.
+PARKING_SIM_START_MARKER = 1  # set to the drawn marker 1..4 on contest day
+PARKING_SIM_SEGMENTS_BY_COLUMN = {
+    # column: (approach_s, swing_s, arc_s)
+    "south": (3.65, 1.90, 12.04),  # markers 1 and 3
+    "north": (1.30, 3.18, 10.13),  # markers 2 and 4
+}
+PARKING_SIM_GEAR_PAUSE_SECONDS = 1.0
+PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS = 12.0
+PARKING_SIM_SWING_STEER = -100
+PARKING_SIM_ARC_STEER = 100
+PARKING_SIM_FORWARD_SPEED = PARKING_SEARCH_SPEED
+PARKING_SIM_REVERSE_SPEED = PARKING_REVERSE_STRAIGHT_SPEED
+PARKING_SIM_DETECT_HOLD_SECONDS = 0.2
+PARKING_SIM_CLEAR_HOLD_SECONDS = 0.2
+PARKING_SIM_SIDE_HOLD_SECONDS = 0.2
+
+
+def parking_sim_column(marker: int) -> str:
+    if marker not in (1, 2, 3, 4):
+        raise ValueError(f"Parking start marker must be 1..4, got {marker}")
+    return "south" if marker in (1, 3) else "north"
+
+
+def build_timed_parking_mission(marker: int) -> TimedParkingMission:
+    approach_s, swing_s, arc_s = PARKING_SIM_SEGMENTS_BY_COLUMN[
+        parking_sim_column(marker)
+    ]
+    return TimedParkingMission(
+        TimedParkingConfig(
+            enabled=True,
+            raw_angle_for_ros_zero_deg=LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG,
+            search_sector_ros_deg=PARKING_SEARCH_SECTOR_ROS_DEG,
+            left_sector_ros_deg=PARKING_LEFT_SECTOR_ROS_DEG,
+            right_sector_ros_deg=PARKING_RIGHT_SECTOR_ROS_DEG,
+            search_detect_mm=PARKING_SEARCH_DETECT_MM,
+            side_detect_mm=PARKING_SIDE_DETECT_MM,
+            detect_hold_s=PARKING_SIM_DETECT_HOLD_SECONDS,
+            clear_hold_s=PARKING_SIM_CLEAR_HOLD_SECONDS,
+            side_hold_s=PARKING_SIM_SIDE_HOLD_SECONDS,
+            swing_steer=PARKING_SIM_SWING_STEER,
+            arc_steer=PARKING_SIM_ARC_STEER,
+            straight_steer=PARKING_STRAIGHT_STEER,
+            forward_speed=PARKING_SIM_FORWARD_SPEED,
+            reverse_speed=PARKING_SIM_REVERSE_SPEED,
+            approach_s=approach_s,
+            swing_s=swing_s,
+            gear_pause_s=PARKING_SIM_GEAR_PAUSE_SECONDS,
+            arc_s=arc_s,
+            straight_back_max_s=PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS,
+        )
+    )
+
 
 # Traffic light stop gating. Stop only when red/yellow bbox area reaches this frame-area ratio.
 TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.058
@@ -276,7 +343,14 @@ def apply_obstacle_mission_override(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="CTRL_ZERO camera/LiDAR/Arduino autonomous driving runtime.")
-    parser.add_argument("--mode", choices=("vision", "manual", "auto", "parking"), default=RUN_MODE)
+    parser.add_argument("--mode", choices=("vision", "manual", "auto", "parking", "parking_sim"), default=RUN_MODE)
+    parser.add_argument(
+        "--parking-start",
+        type=int,
+        choices=(1, 2, 3, 4),
+        default=PARKING_SIM_START_MARKER,
+        help="parking_sim start marker drawn on contest day (1/3=south column, 2/4=north column)",
+    )
     parser.add_argument("--backend", choices=("yolo",), default=LANE_BACKEND)
     parser.add_argument("--yolo-model", type=Path, default=YOLO_MODEL_PATH)
     parser.add_argument("--yolo-frame-skip", type=int, default=YOLO_FRAME_SKIP)
@@ -491,6 +565,7 @@ def main() -> None:
             go_out_turn_min_seconds=PARKING_GO_OUT_TURN_MIN_SECONDS,
         )
     )
+    parking_sim_mission = build_timed_parking_mission(args.parking_start)
     logger = DriveLogger(
         LogConfig(
             enabled=(LOG_ENABLED or args.log) and not args.no_log,
@@ -522,6 +597,16 @@ def main() -> None:
             print("Parking mode: LiDAR-driven parallel parking (lane/obstacle logic bypassed).")
             if lidar is None:
                 print("WARNING: USE_LIDAR is False; parking has no sensor input and cannot work.")
+        if args.mode == "parking_sim":
+            column = parking_sim_column(args.parking_start)
+            approach_s, swing_s, arc_s = PARKING_SIM_SEGMENTS_BY_COLUMN[column]
+            print(
+                "Parking_sim mode: timed two-arc perpendicular parking "
+                f"(marker {args.parking_start}, {column} column: "
+                f"approach {approach_s}s, swing {swing_s}s, arc {arc_s}s)."
+            )
+            if lidar is None:
+                print("WARNING: USE_LIDAR is False; parking_sim has no sensor input and cannot work.")
         if motor_enabled:
             print("Drive is waiting. Press d/D to start motor output.")
 
@@ -562,6 +647,9 @@ def main() -> None:
                     # obstacle mission are bypassed entirely.
                     parking_command = parking_mission.step(last_lidar_scan)
                     command = parking_command or DriveCommand(steer=0, speed=0, reason="parking_idle")
+                elif args.mode == "parking_sim":
+                    parking_command = parking_sim_mission.step(last_lidar_scan)
+                    command = parking_command or DriveCommand(steer=0, speed=0, reason="parking_sim_idle")
                 else:
                     base_command = controller.compute(
                         lane_for_control,

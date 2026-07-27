@@ -123,6 +123,16 @@
       "pitch_deg": -17.0,
       "yaw_deg": 0.0
     },
+    "lidar": {
+      "position_from_rear_axle_m": [
+        0.87,
+        0.0
+      ],
+      "raw_angle_for_ros_zero_deg": 180.0,
+      "range_max_mm": 12000.0,
+      "angular_step_deg": 1.0,
+      "scan_rate_hz": 10.0
+    },
     "camera_measurements": {
       "width_px": 640,
       "height_px": 480,
@@ -153,6 +163,8 @@
     "drive_speed_measurement": "User measured 1.0 m in 1.75 s at forward PWM 255 (0.571428571429 m/s), confirmed equal reverse endpoint speed, and explicitly authorized linear interpolation for all remaining PWM values outside the firmware deadband. The user later reported a real lap time of 47-48 s and authorized recalibrating the PWM 255 endpoint from lap time; after the k=1.1604096 map rescale the outer-lane path is ~36.96 m, giving 0.778 m/s (supersedes the interim 0.667 m/s derived on the undersized map). The reverse endpoint is scaled to match.",
     "drive_speed_response": "User explicitly authorized instantaneous target-speed response with no simulated acceleration or braking delay.",
     "camera_measurement": "User specified Logitech C922, 640x480 images, camera height 0.80 m above ground, centered lateral mounting, and forward yaw. Logitech specifies 70.42 deg horizontal FOV. A user-provided modified-vehicle side photograph estimates the lens at +0.067 m forward of the rear axle. Rendered comparison at -10, -17, and -20 deg selected -17 deg because only a small part of the vehicle enters the bottom edge. The user authorized recording 30 fps, the C922 standard capture rate at 640x480, pending an exact measurement.",
+    "lidar_measurement": "User specified the LiDAR is mounted at the front center of the vehicle on a bumper adapter. The user-provided LD_Adaptor.stl measures 120 x 80 x 25 mm with a 10 mm mounting wall at one end and the four sensor standoffs centered 69 mm ahead of that wall, so the sensor rotation center sits about 0.069 m ahead of the 0.801 m front body end: 0.87 m forward of the rear axle, laterally centered. The rotation center is assumed at the standoff-pattern center. The raw-angle convention (front=raw 180, ros=180-raw) comes from ctrl_zero/lidar.py, confirmed on the physical car with lidar_probe.py. Simulated range limit 12 m, 1 deg step, and 10 Hz scan rate follow the RPLidar A1 class sensor; the exact sensor model remains unmeasured. The mission state machine is stepped once per simulated scan so debounce frame counts see a realistic rate.",
+    "parking_scenario": "Parking bay geometry is measured from the generated track texture in the rescaled world frame: divider centers x = -0.873, 0.069, 1.010, 1.954, 2.898 m, bay top y = 1.532 m, bay mouth y = 0.220 m, aisle south boundary y = -1.436 m, entry line x = 3.879 m. Obstacle cars use the own-vehicle footprint 0.99 x 0.55 m per user authorization. The four 3 cm start markers ARE drawn on the map beside the IN text and were measured from the texture at (4.121,-0.749), (4.121,-0.461), (4.433,-0.749), (4.433,-0.461) m with blob sizes 29-33 mm, independently confirming the 3 cm specification square after the map rescale. The marker sits under the right front wheel with the vehicle heading west; markers 1/3 are the south column, 2/4 the north column.",
     "firmware_parameters": "arduino/CTRL_ZERO_Controller/CTRL_ZERO_Controller.ino at repository revision 9a82359.",
     "unknown_policy": "A null physical or hardware parameter is a hard error. It is never replaced by a fallback or estimate."
   }
