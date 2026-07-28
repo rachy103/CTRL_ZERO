@@ -85,47 +85,68 @@ OBSTACLE_LIDAR_MAX_ROS_DEG = 20.0
 # reason, far_y value) to the console.  Set False to only log detect/clear.
 OBSTACLE_LOG_EVERY_FRAME = True
 
-# Parking sensor geometry (shared by --mode parking_sim / TimedParkingMission).
-# Sectors are ROS angles (forward=0, left=+90, right=-90); parked cars are on the right.
-PARKING_SEARCH_SECTOR_ROS_DEG = (270.0, 275.0)   # right abeam sector: counts the two parked cars
-PARKING_LEFT_SECTOR_ROS_DEG = (85.0, 95.0)       # left abeam sector: side car during reverse
-PARKING_RIGHT_SECTOR_ROS_DEG = (270.0, 275.0)    # right abeam sector: side car during reverse
-PARKING_SEARCH_DETECT_MM = 2500.0                # a parked car within this = detected
-PARKING_SIDE_DETECT_MM = 1000.0                  # both-sides distance that stops the straight reverse
-PARKING_STRAIGHT_STEER = 0                       # steering value that drives straight (pot calibration)
-PARKING_SEARCH_SPEED = 150                       # forward speed while searching / approaching
-PARKING_REVERSE_STRAIGHT_SPEED = -150            # reverse speed
+# --mode parking_sim: LiDAR + 시간 기반 직각 주차/출차 설정 -----------------
+# LiDAR 각도는 ROS 기준이다: 정면=0도, 왼쪽=+90도, 오른쪽=-90도(=270도).
 
-# --mode parking_sim: timed two-arc perpendicular parking, validated in the
-# MuJoCo simulation (sim/README.md). After passing the FIRST parked car (its
-# trailing edge clears the right abeam sector), the car drives straight for
-# APPROACH_S, swings forward
-# full-lock LEFT for SWING_S, stops for GEAR_PAUSE (steering pre-turned
-# right), reverses full-lock RIGHT for ARC_S, then reverses straight until
-# BOTH +/-90 deg sectors see the neighbouring cars within
-# PARKING_SIDE_DETECT_MM.
-#
-# ONE parameter set covers all four start markers: the marker rows
-# (longitudinal 30 cm) are absorbed by the second-car trigger, and the
-# marker columns (lateral 30 cm) shift only the reverse arc's END DEPTH,
-# which the LiDAR-stopped straight reverse absorbs - the 90 deg rotation
-# swaps the offset axes. The swing angle (theta1 ~= 17 deg) is sized so the
-# swing-out clears the aisle's south boundary even from the closest (south)
-# marker column. Re-trim on the real track: if the car parks D cm toward
-# the entry (right when facing the bay), ADD D/44 seconds to
-# PARKING_SIM_APPROACH_S; subtract to move it the other way. (D/44 because
-# APPROACH now runs at 150 PWM = 1.5x the 100-PWM sim speed.)
-PARKING_SIM_APPROACH_S = 4.2  # 0.3 x 255/150 (rescaled 255->150 PWM)
-PARKING_SIM_SWING_S = 1.70     # 1.0 x 255/150
-PARKING_SIM_ARC_S = 4.8       # 3.0 x 255/150
-PARKING_SIM_GEAR_PAUSE_SECONDS = 1.0            # stationary dwell: NOT speed-scaled
-PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS = 3.40   # 2.0 x 255/150 (keeps same max reverse distance)
+# 첫 번째 주차 차량을 확인하는 오른쪽 측면 각도 범위.
+PARKING_SEARCH_SECTOR_ROS_DEG = (270.0, 275.0)
+# 직선 후진 중 왼쪽 주차 차량과의 거리를 확인하는 각도 범위.
+PARKING_LEFT_SECTOR_ROS_DEG = (85.0, 95.0)
+# 직선 후진 중 오른쪽 주차 차량과의 거리를 확인하는 각도 범위.
+PARKING_RIGHT_SECTOR_ROS_DEG = (270.0, 275.0)
+
+# 탐색 범위의 평균 거리가 이 값(mm) 이하면 첫 번째 차량을 감지한 것으로 판단한다.
+PARKING_SEARCH_DETECT_MM = 2500.0
+# 직선 후진 중 좌우 평균 거리가 모두 이 값(mm) 이하면 정상 주차 완료로 판단한다.
+PARKING_SIDE_DETECT_MM = 1000.0
+
+# 직진에 사용하는 조향 명령값
+PARKING_STRAIGHT_STEER = 0
+# 첫 차량 탐색, 접근, 출차에 사용하는 전진 PWM 속도.
+PARKING_SEARCH_SPEED = 150
+# 우측 곡선 후진과 직선 후진에 사용하는 후진 PWM 속도.
+PARKING_REVERSE_STRAIGHT_SPEED = -150
+
+# 첫 번째 차량의 뒤쪽 끝이 탐색 범위에서 사라진 뒤 직진하는 시간(초).
+# 늘리면 전진 스윙을 더 앞쪽에서 시작하고, 줄이면 더 뒤쪽에서 시작한다.
+PARKING_SIM_APPROACH_S = 4.2
+# 왼쪽 최대 조향으로 전진하여 차 앞부분을 주차 공간 반대쪽으로 벌리는 시간(초).
+PARKING_SIM_SWING_S = 1.70
+# 오른쪽 최대 조향으로 후진하여 차체를 주차 공간 안으로 회전시키는 시간(초).
+PARKING_SIM_ARC_S = 4.9
+# 전진 스윙 후 정지한 채 바퀴를 오른쪽으로 미리 돌려 놓는 시간(초).
+PARKING_SIM_GEAR_PAUSE_SECONDS = 1.0
+# 좌우 차량 감지에 실패했을 때 직선 후진을 강제로 끝내는 최대 시간(초).
+# 이 타임아웃이 발생하면 자동 출차하지 않고 정지 상태를 유지한다.
+PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS = 3.40
+
+## 출차
+# 출차 시작 전 정지 시간(초).
+PARKING_SIM_PARKED_PAUSE_S = 5.0
+# 조향 0으로 직진 출차하는 시간(초).
+PARKING_SIM_EXIT_APPROACH_S = 2.0
+# 우측 조향을 유지하며 곡선 전진 출차하는 시간(초).
+PARKING_SIM_EXIT_ARC_S = 7.5
+
+# 전진 스윙 단계의 조향값: -100은 왼쪽 최대 조향.
 PARKING_SIM_SWING_STEER = -100
+# 곡선 후진 단계의 조향값: +100은 오른쪽 최대 조향.
 PARKING_SIM_ARC_STEER = 100
+# 곡선 전진 출차 단계의 조향값: +100은 오른쪽 최대 조향.
+PARKING_SIM_EXIT_ARC_STEER = 100
+
+# 주차 및 출차 상태 머신에 전달할 전진 속도.
 PARKING_SIM_FORWARD_SPEED = PARKING_SEARCH_SPEED
+# 주차 상태 머신에 전달할 후진 속도.
 PARKING_SIM_REVERSE_SPEED = PARKING_REVERSE_STRAIGHT_SPEED
+
+# 첫 차량이 연속으로 감지되어야 하는 최소 시간(초). 0이면 즉시 인정한다.
 PARKING_SIM_DETECT_HOLD_SECONDS = 0.0
+# 첫 차량의 미감지 상태가 유지되어야 하는 최소 시간(초).
+# 0이면 한 번의 미감지로 즉시 차량의 뒤쪽 끝을 통과했다고 판단한다.
 PARKING_SIM_CLEAR_HOLD_SECONDS = 0.0
+# 직선 후진 중 좌우 차량이 모두 가까운 상태로 유지되어야 하는 최소 시간(초).
+# 0이면 한 번의 측정만으로 정상 주차 완료를 판단한다.
 PARKING_SIM_SIDE_HOLD_SECONDS = 0.0
 
 
@@ -152,6 +173,10 @@ def build_timed_parking_mission() -> TimedParkingMission:
             gear_pause_s=PARKING_SIM_GEAR_PAUSE_SECONDS,
             arc_s=PARKING_SIM_ARC_S,
             straight_back_max_s=PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS,
+            parked_pause_s=PARKING_SIM_PARKED_PAUSE_S,
+            exit_approach_s=PARKING_SIM_EXIT_APPROACH_S,
+            exit_arc_s=PARKING_SIM_EXIT_ARC_S,
+            exit_arc_steer=PARKING_SIM_EXIT_ARC_STEER,
         )
     )
 
@@ -540,7 +565,10 @@ def main() -> None:
             print(
                 "Parking_sim mode: timed two-arc perpendicular parking "
                 f"(all start markers: approach {PARKING_SIM_APPROACH_S}s, "
-                f"swing {PARKING_SIM_SWING_S}s, arc {PARKING_SIM_ARC_S}s)."
+                f"swing {PARKING_SIM_SWING_S}s, arc {PARKING_SIM_ARC_S}s, "
+                f"parked pause {PARKING_SIM_PARKED_PAUSE_S}s, "
+                f"exit approach {PARKING_SIM_EXIT_APPROACH_S}s, "
+                f"exit arc {PARKING_SIM_EXIT_ARC_S}s)."
             )
             if lidar is None:
                 print("WARNING: USE_LIDAR is False; parking_sim has no sensor input and cannot work.")

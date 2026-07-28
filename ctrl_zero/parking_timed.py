@@ -13,7 +13,11 @@ Maneuver, driving west along the parking aisle with the bays on the right:
                       theta2 = 90 deg - theta1, tail swings into the bay).
 6. ``STRAIGHT_BACK``– reverse straight; stop when BOTH +/-90 deg sectors see
                       the neighbouring cars within ``side_detect_mm``.
-7. ``DONE``         – hold still.
+7. ``PARKED_PAUSE`` – hold still for a fixed time after parking.
+8. ``EXIT_APPROACH``– drive straight forward briefly before turning out.
+9. ``EXIT_ARC``     – full-lock RIGHT forward for a fixed time to leave the bay.
+10. ``DONE``        – continue driving straight out of the parking area.
+11. ``ABORTED``     – hold still after a safety timeout.
 
 Segment durations come from the closed-form two-arc geometry validated in
 the MuJoCo simulation (sim/parking_scenario.timed_plan); they depend only on
@@ -39,7 +43,11 @@ class TimedParkingState(Enum):
     GEAR_PAUSE = 4
     ARC_BACK = 5
     STRAIGHT_BACK = 6
-    DONE = 7
+    PARKED_PAUSE = 7
+    EXIT_APPROACH = 8
+    EXIT_ARC = 9
+    DONE = 10
+    ABORTED = 11
 
 
 @dataclass(frozen=True)
@@ -72,6 +80,10 @@ class TimedParkingConfig:
     gear_pause_s: float = 1.0
     arc_s: float = 12.04
     straight_back_max_s: float = 12.0
+    parked_pause_s: float = 5.0
+    exit_approach_s: float = 1.0
+    exit_arc_s: float = 4.8
+    exit_arc_steer: int = 100
 
 
 class _HoldTracker:
@@ -114,7 +126,7 @@ class TimedParkingMission:
 
     @property
     def done(self) -> bool:
-        return self.state == TimedParkingState.DONE
+        return self.state in (TimedParkingState.DONE, TimedParkingState.ABORTED)
 
     def step(
         self, scan: np.ndarray | None, now_s: float | None = None
@@ -134,7 +146,11 @@ class TimedParkingMission:
             TimedParkingState.GEAR_PAUSE: self._gear_pause,
             TimedParkingState.ARC_BACK: self._arc_back,
             TimedParkingState.STRAIGHT_BACK: self._straight_back,
+            TimedParkingState.PARKED_PAUSE: self._parked_pause,
+            TimedParkingState.EXIT_APPROACH: self._exit_approach,
+            TimedParkingState.EXIT_ARC: self._exit_arc,
             TimedParkingState.DONE: self._done,
+            TimedParkingState.ABORTED: self._aborted,
         }[self.state]
         return handler(scan, now, elapsed)
 
@@ -211,15 +227,54 @@ class TimedParkingMission:
         if self.side_tracker.held_true(now_s, cfg.side_hold_s):
             # Stop on THIS frame (speed 0), not one frame later, so the reverse
             # ends the instant both sides are seen.
-            self._enter(TimedParkingState.DONE, now_s)
+            self._enter(TimedParkingState.PARKED_PAUSE, now_s)
             return DriveCommand(cfg.straight_steer, 0, "parking_sim_straight_back_stop")
         if elapsed >= cfg.straight_back_max_s:
             # Safety stop: never reverse past the bay if the sensors miss.
-            self._enter(TimedParkingState.DONE, now_s)
+            self._enter(TimedParkingState.ABORTED, now_s)
             return DriveCommand(cfg.straight_steer, 0, "parking_sim_straight_back_timeout")
         return DriveCommand(
             cfg.straight_steer, cfg.reverse_speed, "parking_sim_straight_back"
         )
 
+    def _parked_pause(self, scan, now_s: float, elapsed: float) -> DriveCommand:
+        cfg = self.config
+        if elapsed >= cfg.parked_pause_s:
+            self._enter(TimedParkingState.EXIT_APPROACH, now_s)
+            return DriveCommand(
+                cfg.straight_steer,
+                cfg.forward_speed,
+                "parking_sim_exit_approach",
+            )
+        return DriveCommand(cfg.straight_steer, 0, "parking_sim_parked_pause")
+
+    def _exit_approach(self, scan, now_s: float, elapsed: float) -> DriveCommand:
+        cfg = self.config
+        if elapsed >= cfg.exit_approach_s:
+            self._enter(TimedParkingState.EXIT_ARC, now_s)
+            return DriveCommand(
+                cfg.exit_arc_steer, cfg.forward_speed, "parking_sim_exit_arc"
+            )
+        return DriveCommand(
+            cfg.straight_steer, cfg.forward_speed, "parking_sim_exit_approach"
+        )
+
+    def _exit_arc(self, scan, now_s: float, elapsed: float) -> DriveCommand:
+        cfg = self.config
+        if elapsed >= cfg.exit_arc_s:
+            self._enter(TimedParkingState.DONE, now_s)
+            return DriveCommand(
+                cfg.straight_steer, cfg.forward_speed, "parking_sim_exit_straight"
+            )
+        return DriveCommand(
+            cfg.exit_arc_steer, cfg.forward_speed, "parking_sim_exit_arc"
+        )
+
     def _done(self, scan, now_s: float, elapsed: float) -> DriveCommand:
-        return DriveCommand(0, 0, "parking_sim_done")
+        cfg = self.config
+        return DriveCommand(
+            cfg.straight_steer, cfg.forward_speed, "parking_sim_exit_straight"
+        )
+
+    def _aborted(self, scan, now_s: float, elapsed: float) -> DriveCommand:
+        return DriveCommand(0, 0, "parking_sim_aborted")
