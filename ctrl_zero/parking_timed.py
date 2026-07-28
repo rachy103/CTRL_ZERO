@@ -2,8 +2,9 @@
 
 Maneuver, driving west along the parking aisle with the bays on the right:
 
-1. ``SEARCH``       – drive straight and count the two parked cars with the
-                      right abeam LiDAR sector; the SECOND car is the anchor.
+1. ``SEARCH``       – drive straight past the FIRST parked car; the instant its
+                      trailing edge clears the right abeam LiDAR sector is the
+                      anchor that starts the maneuver.
 2. ``APPROACH``     – keep driving straight for a fixed time.
 3. ``SWING``        – full-lock LEFT forward for a fixed time (rotate theta1
                       away from the bays).
@@ -165,10 +166,8 @@ class TimedParkingMission:
         elif self.search_stage == "first_car" and self.search_tracker.held_false(
             now_s, cfg.clear_hold_s
         ):
-            self.search_stage = "gap"
-        elif self.search_stage == "gap" and self.search_tracker.held_true(
-            now_s, cfg.detect_hold_s
-        ):
+            # Anchor on the FIRST car: the instant we have driven past it (its
+            # trailing edge clears the right abeam sector), start the maneuver.
             self._enter(TimedParkingState.APPROACH, now_s)
         return DriveCommand(cfg.straight_steer, cfg.forward_speed, "parking_sim_search")
 

@@ -97,8 +97,9 @@ PARKING_SEARCH_SPEED = 150                       # forward speed while searching
 PARKING_REVERSE_STRAIGHT_SPEED = -150            # reverse speed
 
 # --mode parking_sim: timed two-arc perpendicular parking, validated in the
-# MuJoCo simulation (sim/README.md). After counting both parked cars with the
-# right abeam sector, the car drives straight for APPROACH_S, swings forward
+# MuJoCo simulation (sim/README.md). After passing the FIRST parked car (its
+# trailing edge clears the right abeam sector), the car drives straight for
+# APPROACH_S, swings forward
 # full-lock LEFT for SWING_S, stops for GEAR_PAUSE (steering pre-turned
 # right), reverses full-lock RIGHT for ARC_S, then reverses straight until
 # BOTH +/-90 deg sectors see the neighbouring cars within
@@ -442,7 +443,10 @@ def main() -> None:
     if motor_enabled and arduino_port in (None, "", "auto"):
         arduino_port = "auto"
 
-    camera = CameraReader(
+    # parking_sim is LiDAR-only: skip the camera + YOLO entirely (no frame grab,
+    # no model load, no display) so it runs light and needs no camera plugged in.
+    parking_sim = args.mode == "parking_sim"
+    camera = None if parking_sim else CameraReader(
         CameraConfig(
             index=args.camera_index,
             backend=args.camera_backend,
@@ -472,7 +476,7 @@ def main() -> None:
         )
     )
 
-    lane_detector = build_lane_detector(args)
+    lane_detector = None if parking_sim else build_lane_detector(args)
     lidar_config = LidarConfig(
         port=LIDAR_PORT,
         front_min_ros_deg=OBSTACLE_LIDAR_MIN_ROS_DEG,
@@ -523,7 +527,8 @@ def main() -> None:
 
     try:
         motor.open()
-        camera.open()
+        if camera is not None:
+            camera.open()
         if lidar is not None:
             lidar.open()
         logger.open()
@@ -541,6 +546,42 @@ def main() -> None:
                 print("WARNING: USE_LIDAR is False; parking_sim has no sensor input and cannot work.")
         if motor_enabled:
             print("Drive is waiting. Press d/D to start motor output.")
+
+        if parking_sim:
+            # LiDAR-only loop: no camera, no YOLO, no display. Keys via console
+            # (q quit, d/D start, space stop).
+            while True:
+                frame_count += 1
+                if lidar is not None and frame_count % max(LIDAR_POLL_EVERY_N_FRAMES, 1) == 0:
+                    try:
+                        last_lidar_scan = lidar.read_scan()
+                    except Exception as exc:  # pragma: no cover - hardware dependent
+                        print(f"LiDAR read failed: {exc}")
+                        last_lidar_scan = None
+                if drive_started:
+                    parking_command = parking_sim_mission.step(last_lidar_scan)
+                    command = parking_command or DriveCommand(steer=0, speed=0, reason="parking_sim_idle")
+                else:
+                    command = DriveCommand(steer=0, speed=0, reason="waiting_for_start")
+                motor.send(command.steer, command.speed if motor_enabled else 0)
+                if frame_count % PRINT_EVERY_N_FRAMES == 0:
+                    print(
+                        f"frame={frame_count} steer={command.steer:+d} "
+                        f"speed={command.speed:+d} reason={command.reason}",
+                        flush=True,
+                    )
+                key = read_console_key()
+                if key == ord("q"):
+                    break
+                if key == ord(" "):
+                    drive_started = False
+                    motor.stop()
+                    print("Stopped. Press d/D to restart.")
+                elif motor_enabled and not drive_started and is_start_key(key):
+                    drive_started = True
+                    print("Drive started.")
+                time.sleep(0.02)
+            return
 
         while True:
             ret, frame = camera.read()
@@ -688,7 +729,8 @@ def main() -> None:
                     manual_steer_until = 0.0
     finally:
         motor.close()
-        camera.release()
+        if camera is not None:
+            camera.release()
         if lidar is not None:
             lidar.close()
         logger.close()
