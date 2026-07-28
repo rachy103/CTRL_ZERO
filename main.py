@@ -87,10 +87,10 @@ OBSTACLE_LOG_EVERY_FRAME = True
 
 # Parking sensor geometry (shared by --mode parking_sim / TimedParkingMission).
 # Sectors are ROS angles (forward=0, left=+90, right=-90); parked cars are on the right.
-PARKING_SEARCH_SECTOR_ROS_DEG = (-95.0, -85.0)   # right abeam sector: counts the two parked cars
+PARKING_SEARCH_SECTOR_ROS_DEG = (270.0, 275.0)   # right abeam sector: counts the two parked cars
 PARKING_LEFT_SECTOR_ROS_DEG = (85.0, 95.0)       # left abeam sector: side car during reverse
-PARKING_RIGHT_SECTOR_ROS_DEG = (-95.0, -85.0)    # right abeam sector: side car during reverse
-PARKING_SEARCH_DETECT_MM = 2000.0                # a parked car within this = detected
+PARKING_RIGHT_SECTOR_ROS_DEG = (270.0, 275.0)    # right abeam sector: side car during reverse
+PARKING_SEARCH_DETECT_MM = 2500.0                # a parked car within this = detected
 PARKING_SIDE_DETECT_MM = 1000.0                  # both-sides distance that stops the straight reverse
 PARKING_STRAIGHT_STEER = 0                       # steering value that drives straight (pot calibration)
 PARKING_SEARCH_SPEED = 150                       # forward speed while searching / approaching
@@ -115,18 +115,18 @@ PARKING_REVERSE_STRAIGHT_SPEED = -150            # reverse speed
 # the entry (right when facing the bay), ADD D/44 seconds to
 # PARKING_SIM_APPROACH_S; subtract to move it the other way. (D/44 because
 # APPROACH now runs at 150 PWM = 1.5x the 100-PWM sim speed.)
-PARKING_SIM_APPROACH_S = 0.6  # 0.3 x 255/150 (rescaled 255->150 PWM)
+PARKING_SIM_APPROACH_S = 3.7  # 0.3 x 255/150 (rescaled 255->150 PWM)
 PARKING_SIM_SWING_S = 1.70     # 1.0 x 255/150
-PARKING_SIM_ARC_S = 5.10       # 3.0 x 255/150
+PARKING_SIM_ARC_S = 5.00       # 3.0 x 255/150
 PARKING_SIM_GEAR_PAUSE_SECONDS = 1.0            # stationary dwell: NOT speed-scaled
 PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS = 3.40   # 2.0 x 255/150 (keeps same max reverse distance)
 PARKING_SIM_SWING_STEER = -100
 PARKING_SIM_ARC_STEER = 100
 PARKING_SIM_FORWARD_SPEED = PARKING_SEARCH_SPEED
 PARKING_SIM_REVERSE_SPEED = PARKING_REVERSE_STRAIGHT_SPEED
-PARKING_SIM_DETECT_HOLD_SECONDS = 1.0
-PARKING_SIM_CLEAR_HOLD_SECONDS = 1.0
-PARKING_SIM_SIDE_HOLD_SECONDS = 1.0
+PARKING_SIM_DETECT_HOLD_SECONDS = 0.0
+PARKING_SIM_CLEAR_HOLD_SECONDS = 0.0
+PARKING_SIM_SIDE_HOLD_SECONDS = 0.0
 
 
 def build_timed_parking_mission() -> TimedParkingMission:
