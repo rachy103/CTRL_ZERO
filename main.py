@@ -32,7 +32,7 @@ RUN_MODE = "auto"
 LANE_BACKEND = "yolo"
 
 # Camera
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 CAMERA_BACKEND = "dshow"  # Windows: "dshow" 권장. 필요 시 "msmf" 또는 "any".
 CAMERA_WIDTH = 0
 CAMERA_HEIGHT = 0
@@ -40,13 +40,13 @@ CAMERA_FPS = 0
 
 # Arduino / motor
 USE_ARDUINO = True
-ARDUINO_PORT = "COM3"
+ARDUINO_PORT = "COM6"
 ARDUINO_BAUDRATE = 115200
 DRIVE_MAX_PWM = 255
 
 # LiDAR
 USE_LIDAR = True
-LIDAR_PORT = "COM4"
+LIDAR_PORT = "COM3"
 LIDAR_POLL_EVERY_N_FRAMES = 2
 LIDAR_STOP_DISTANCE_MM = 450.0
 LIDAR_SLOW_DISTANCE_MM = 900.0
@@ -115,9 +115,9 @@ PARKING_REVERSE_STRAIGHT_SPEED = -150            # reverse speed
 # the entry (right when facing the bay), ADD D/44 seconds to
 # PARKING_SIM_APPROACH_S; subtract to move it the other way. (D/44 because
 # APPROACH now runs at 150 PWM = 1.5x the 100-PWM sim speed.)
-PARKING_SIM_APPROACH_S = 3.7  # 0.3 x 255/150 (rescaled 255->150 PWM)
+PARKING_SIM_APPROACH_S = 4.2  # 0.3 x 255/150 (rescaled 255->150 PWM)
 PARKING_SIM_SWING_S = 1.70     # 1.0 x 255/150
-PARKING_SIM_ARC_S = 5.00       # 3.0 x 255/150
+PARKING_SIM_ARC_S = 4.8       # 3.0 x 255/150
 PARKING_SIM_GEAR_PAUSE_SECONDS = 1.0            # stationary dwell: NOT speed-scaled
 PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS = 3.40   # 2.0 x 255/150 (keeps same max reverse distance)
 PARKING_SIM_SWING_STEER = -100
