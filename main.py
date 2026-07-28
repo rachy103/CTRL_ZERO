@@ -13,7 +13,6 @@ from ctrl_zero.control import DriveCommand, DriveConfig, DriveController
 from ctrl_zero.lidar import LidarConfig, LidarReader, ObstacleDecision, analyze_obstacles
 from ctrl_zero.logger import DriveLogger, LogConfig
 from ctrl_zero.obstacles import ContestObstacleMission, ContestObstacleMissionConfig
-from ctrl_zero.parking_hard import ParkingHardConfig, ParkingHardMission
 from ctrl_zero.parking_timed import TimedParkingConfig, TimedParkingMission
 from ctrl_zero.safety import SafetyDecision, build_safety_decision
 from ctrl_zero.traffic_light import traffic_light_object
@@ -42,7 +41,7 @@ CAMERA_FPS = 0
 # Arduino / motor
 USE_ARDUINO = True
 ARDUINO_PORT = "COM3"
-ARDUINO_BAUDRATE = 9600
+ARDUINO_BAUDRATE = 115200
 DRIVE_MAX_PWM = 255
 
 # LiDAR
@@ -86,32 +85,16 @@ OBSTACLE_LIDAR_MAX_ROS_DEG = 20.0
 # reason, far_y value) to the console.  Set False to only log detect/clear.
 OBSTACLE_LOG_EVERY_FRAME = True
 
-# Parallel parking (--mode parking). LiDAR-only, drives the car standalone.
+# Parking sensor geometry (shared by --mode parking_sim / TimedParkingMission).
 # Sectors are ROS angles (forward=0, left=+90, right=-90); parked cars are on the right.
-PARKING_SEARCH_SECTOR_ROS_DEG = (-95.0, -85.0)   # right side scanned while approaching
-PARKING_LEFT_SECTOR_ROS_DEG = (85.0, 95.0)
-PARKING_RIGHT_SECTOR_ROS_DEG = (-95.0, -85.0)
+PARKING_SEARCH_SECTOR_ROS_DEG = (-95.0, -85.0)   # right abeam sector: counts the two parked cars
+PARKING_LEFT_SECTOR_ROS_DEG = (85.0, 95.0)       # left abeam sector: side car during reverse
+PARKING_RIGHT_SECTOR_ROS_DEG = (-95.0, -85.0)    # right abeam sector: side car during reverse
 PARKING_SEARCH_DETECT_MM = 2000.0                # a parked car within this = detected
-PARKING_SIDE_DETECT_MM = 1000.0                  # side car distance during reverse
-PARKING_GO_OUT_DETECT_MM = 1500.0                # side car distance while exiting
-PARKING_DETECT_FRAMES = 3
-PARKING_CLEAR_FRAMES = 3
-PARKING_INIT_STEER = 7                            # start-position dependent; tune first
-PARKING_STRAIGHT_STEER = -1                       # -1 drives straight (pot calibration)
-PARKING_FIRST_STOP_STEER = 30
-PARKING_GO_OUT_TURN_STEER = 30
-PARKING_CENTERING_DEADBAND_MM = 400.0
-PARKING_CENTERING_STEER = 3
-PARKING_SEARCH_SPEED = 100
-PARKING_REVERSE_RIGHT_SPEED = -50
-PARKING_REVERSE_STRAIGHT_SPEED = -70
-PARKING_ADJUST_FORWARD_SPEED = 70
-PARKING_GO_OUT_TURN_SPEED = 35
-PARKING_GO_OUT_STRAIGHT_SPEED = 70
-PARKING_FIRST_STOP_SECONDS = 2.0
-PARKING_REVERSE_PAUSE_SECONDS = 4.0
-PARKING_ADJUST_FORWARD_MIN_SECONDS = 3.0
-PARKING_GO_OUT_TURN_MIN_SECONDS = 25.0
+PARKING_SIDE_DETECT_MM = 1000.0                  # both-sides distance that stops the straight reverse
+PARKING_STRAIGHT_STEER = 0                       # steering value that drives straight (pot calibration)
+PARKING_SEARCH_SPEED = 150                       # forward speed while searching / approaching
+PARKING_REVERSE_STRAIGHT_SPEED = -150            # reverse speed
 
 # --mode parking_sim: timed two-arc perpendicular parking, validated in the
 # MuJoCo simulation (sim/README.md). After counting both parked cars with the
@@ -128,20 +111,21 @@ PARKING_GO_OUT_TURN_MIN_SECONDS = 25.0
 # swaps the offset axes. The swing angle (theta1 ~= 17 deg) is sized so the
 # swing-out clears the aisle's south boundary even from the closest (south)
 # marker column. Re-trim on the real track: if the car parks D cm toward
-# the entry (right when facing the bay), ADD D/29 seconds to
-# PARKING_SIM_APPROACH_S; subtract to move it the other way.
-PARKING_SIM_APPROACH_S = 3.65
-PARKING_SIM_SWING_S = 1.90
-PARKING_SIM_ARC_S = 12.04
-PARKING_SIM_GEAR_PAUSE_SECONDS = 1.0
-PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS = 12.0
+# the entry (right when facing the bay), ADD D/44 seconds to
+# PARKING_SIM_APPROACH_S; subtract to move it the other way. (D/44 because
+# APPROACH now runs at 150 PWM = 1.5x the 100-PWM sim speed.)
+PARKING_SIM_APPROACH_S = 0.6  # 0.3 x 255/150 (rescaled 255->150 PWM)
+PARKING_SIM_SWING_S = 1.70     # 1.0 x 255/150
+PARKING_SIM_ARC_S = 5.10       # 3.0 x 255/150
+PARKING_SIM_GEAR_PAUSE_SECONDS = 1.0            # stationary dwell: NOT speed-scaled
+PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS = 3.40   # 2.0 x 255/150 (keeps same max reverse distance)
 PARKING_SIM_SWING_STEER = -100
 PARKING_SIM_ARC_STEER = 100
 PARKING_SIM_FORWARD_SPEED = PARKING_SEARCH_SPEED
 PARKING_SIM_REVERSE_SPEED = PARKING_REVERSE_STRAIGHT_SPEED
-PARKING_SIM_DETECT_HOLD_SECONDS = 0.2
-PARKING_SIM_CLEAR_HOLD_SECONDS = 0.2
-PARKING_SIM_SIDE_HOLD_SECONDS = 0.2
+PARKING_SIM_DETECT_HOLD_SECONDS = 1.0
+PARKING_SIM_CLEAR_HOLD_SECONDS = 1.0
+PARKING_SIM_SIDE_HOLD_SECONDS = 1.0
 
 
 def build_timed_parking_mission() -> TimedParkingMission:
@@ -335,7 +319,7 @@ def apply_obstacle_mission_override(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="CTRL_ZERO camera/LiDAR/Arduino autonomous driving runtime.")
-    parser.add_argument("--mode", choices=("vision", "manual", "auto", "parking", "parking_sim"), default=RUN_MODE)
+    parser.add_argument("--mode", choices=("vision", "manual", "auto", "parking_sim"), default=RUN_MODE)
     parser.add_argument("--backend", choices=("yolo",), default=LANE_BACKEND)
     parser.add_argument("--yolo-model", type=Path, default=YOLO_MODEL_PATH)
     parser.add_argument("--yolo-frame-skip", type=int, default=YOLO_FRAME_SKIP)
@@ -519,37 +503,6 @@ def main() -> None:
             lidar_max_ros_deg=OBSTACLE_LIDAR_MAX_ROS_DEG,
         )
     )
-    parking_mission = ParkingHardMission(
-        ParkingHardConfig(
-            raw_angle_for_ros_zero_deg=LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG,
-            search_sector_ros_deg=PARKING_SEARCH_SECTOR_ROS_DEG,
-            left_sector_ros_deg=PARKING_LEFT_SECTOR_ROS_DEG,
-            right_sector_ros_deg=PARKING_RIGHT_SECTOR_ROS_DEG,
-            search_detect_mm=PARKING_SEARCH_DETECT_MM,
-            side_detect_mm=PARKING_SIDE_DETECT_MM,
-            go_out_detect_mm=PARKING_GO_OUT_DETECT_MM,
-            detect_frames=PARKING_DETECT_FRAMES,
-            clear_frames=PARKING_CLEAR_FRAMES,
-            init_steer=PARKING_INIT_STEER,
-            straight_steer=PARKING_STRAIGHT_STEER,
-            first_stop_steer=PARKING_FIRST_STOP_STEER,
-            reverse_right_steer=PARKING_INIT_STEER,
-            go_out_turn_steer=PARKING_GO_OUT_TURN_STEER,
-            go_out_straight_steer=PARKING_STRAIGHT_STEER,
-            centering_deadband_mm=PARKING_CENTERING_DEADBAND_MM,
-            centering_steer=PARKING_CENTERING_STEER,
-            search_speed=PARKING_SEARCH_SPEED,
-            reverse_right_speed=PARKING_REVERSE_RIGHT_SPEED,
-            reverse_straight_speed=PARKING_REVERSE_STRAIGHT_SPEED,
-            adjust_forward_speed=PARKING_ADJUST_FORWARD_SPEED,
-            go_out_turn_speed=PARKING_GO_OUT_TURN_SPEED,
-            go_out_straight_speed=PARKING_GO_OUT_STRAIGHT_SPEED,
-            first_stop_seconds=PARKING_FIRST_STOP_SECONDS,
-            reverse_pause_seconds=PARKING_REVERSE_PAUSE_SECONDS,
-            adjust_forward_min_seconds=PARKING_ADJUST_FORWARD_MIN_SECONDS,
-            go_out_turn_min_seconds=PARKING_GO_OUT_TURN_MIN_SECONDS,
-        )
-    )
     parking_sim_mission = build_timed_parking_mission()
     logger = DriveLogger(
         LogConfig(
@@ -578,10 +531,6 @@ def main() -> None:
         print("Keys: q quit, d start/resume, space stop + manual, +/- max speed, l toggle log.")
         print("Manual driving (space or --mode manual): w/s speed, a/d steer pulse, c center steer.")
         print(f"Runtime: mode={args.mode}, backend={args.backend}, motor={'on' if motor_enabled else 'dry'}")
-        if args.mode == "parking":
-            print("Parking mode: LiDAR-driven parallel parking (lane/obstacle logic bypassed).")
-            if lidar is None:
-                print("WARNING: USE_LIDAR is False; parking has no sensor input and cannot work.")
         if args.mode == "parking_sim":
             print(
                 "Parking_sim mode: timed two-arc perpendicular parking "
@@ -625,12 +574,9 @@ def main() -> None:
                 traffic_light_min_stop_area_ratio=TRAFFIC_LIGHT_STOP_AREA_RATIO,
             )
             if drive_started:
-                if args.mode == "parking":
+                if args.mode == "parking_sim":
                     # Parking runs standalone off LiDAR; the lane controller and
                     # obstacle mission are bypassed entirely.
-                    parking_command = parking_mission.step(last_lidar_scan)
-                    command = parking_command or DriveCommand(steer=0, speed=0, reason="parking_idle")
-                elif args.mode == "parking_sim":
                     parking_command = parking_sim_mission.step(last_lidar_scan)
                     command = parking_command or DriveCommand(steer=0, speed=0, reason="parking_sim_idle")
                 else:

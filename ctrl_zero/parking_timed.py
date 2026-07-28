@@ -210,10 +210,14 @@ class TimedParkingMission:
             left <= cfg.side_detect_mm and right <= cfg.side_detect_mm, now_s
         )
         if self.side_tracker.held_true(now_s, cfg.side_hold_s):
+            # Stop on THIS frame (speed 0), not one frame later, so the reverse
+            # ends the instant both sides are seen.
             self._enter(TimedParkingState.DONE, now_s)
-        elif elapsed >= cfg.straight_back_max_s:
+            return DriveCommand(cfg.straight_steer, 0, "parking_sim_straight_back_stop")
+        if elapsed >= cfg.straight_back_max_s:
             # Safety stop: never reverse past the bay if the sensors miss.
             self._enter(TimedParkingState.DONE, now_s)
+            return DriveCommand(cfg.straight_steer, 0, "parking_sim_straight_back_timeout")
         return DriveCommand(
             cfg.straight_steer, cfg.reverse_speed, "parking_sim_straight_back"
         )

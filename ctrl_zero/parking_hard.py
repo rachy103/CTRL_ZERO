@@ -26,7 +26,10 @@ from enum import Enum
 import numpy as np
 
 from ctrl_zero.control import DriveCommand
-from ctrl_zero.lidar import average_distance_mm_in_ros_sector
+from ctrl_zero.lidar import (
+    average_distance_mm_in_ros_sector,
+    min_distance_mm_in_ros_sector,
+)
 
 
 class ParkingHardState(Enum):
@@ -45,9 +48,9 @@ class ParkingHardConfig:
     enabled: bool = True
     raw_angle_for_ros_zero_deg: float = 180.0
     # Sectors as (min_ros_deg, max_ros_deg).  Parked cars / spot are on the right.
-    search_sector_ros_deg: tuple[float, float] = (-95.0, -85.0)   # right side
+    search_sector_ros_deg: tuple[float, float] = (265.0, 275.0)   # right side
     left_sector_ros_deg: tuple[float, float] = (85.0, 95.0)
-    right_sector_ros_deg: tuple[float, float] = (-95.0, -85.0)
+    right_sector_ros_deg: tuple[float, float] = (265.0, 275.0)
 
     # Detection thresholds (mm) and debounce frame counts.
     search_detect_mm: float = 2000.0
@@ -59,8 +62,8 @@ class ParkingHardConfig:
     # Steering (CTRL_ZERO steer units; -1 == straight due to pot calibration).
     init_steer: int = 7
     straight_steer: int = -1
-    first_stop_steer: int = 30
-    reverse_right_steer: int = 7
+    first_stop_steer: int = 80
+    reverse_right_steer: int = 80
     go_out_turn_steer: int = 30
     go_out_straight_steer: int = -1
     centering_deadband_mm: float = 400.0
@@ -76,6 +79,9 @@ class ParkingHardConfig:
 
     # Durations (seconds).
     first_stop_seconds: float = 2.0
+    # Hardcoded reverse-turn time: how long to reverse with the steering held
+    # after the 2nd car is first recognized, before straightening to 0.
+    reverse_right_seconds: float = 2.0
     reverse_pause_seconds: float = 4.0
     adjust_forward_min_seconds: float = 3.0
     go_out_turn_min_seconds: float = 25.0
@@ -94,6 +100,11 @@ class _SideTracker:
         else:
             self.clear += 1
             self.detect = 0
+
+    def reset(self) -> None:
+        self.detect = 0
+        self.clear = 0
+        self.state = "no_obstacle"
 
 
 class ParkingHardMission:
@@ -139,6 +150,14 @@ class ParkingHardMission:
         )
         return float("inf") if value is None else value
 
+    def _sector_min_mm(self, scan: np.ndarray | None, sector: tuple[float, float]) -> float:
+        # Nearest return in the sector — "is *something* within range?" as opposed
+        # to the sector average.
+        value = min_distance_mm_in_ros_sector(
+            scan, sector[0], sector[1], self.config.raw_angle_for_ros_zero_deg
+        )
+        return float("inf") if value is None else value
+
     def _cmd(self, speed: int, steer: int, reason: str) -> DriveCommand:
         return DriveCommand(steer=int(steer), speed=int(speed), reason=reason)
 
@@ -158,10 +177,15 @@ class ParkingHardMission:
         elif self.obstacle_state == "passed_first" and self.obs_clear >= cfg.clear_frames:
             self.obstacle_state = "between"
         elif self.obstacle_state == "between" and self.obs_detect >= cfg.detect_frames:
+            # First recognition of the 2nd car: begin the timed reverse turn right
+            # away, with the steering held.  No separate stop, so the wheels turn
+            # while the car is already rolling back and never fight stationary
+            # steering stiction.
             self.obstacle_state = "passed_second"
-        elif self.obstacle_state == "passed_second" and self.obs_clear >= cfg.clear_frames:
-            self._enter(ParkingHardState.FIRST_STOP, now_s)
-            return self._cmd(0, cfg.init_steer, "parking_search_done_stop")
+            self.left.reset()
+            self.right.reset()
+            self._enter(ParkingHardState.REVERSE_RIGHT, now_s)
+            return self._cmd(cfg.reverse_right_speed, cfg.reverse_right_steer, "parking_reverse_turn_start")
 
         # Otherwise keep driving forward past the parked cars.
         return self._cmd(cfg.search_speed, cfg.straight_steer, "parking_search")
@@ -173,36 +197,26 @@ class ParkingHardMission:
         return self._cmd(0, cfg.first_stop_steer, "parking_first_stop")
 
     def _reverse_right(self, scan: np.ndarray | None, now_s: float) -> DriveCommand:
+        # Reverse with the steering held at reverse_right_steer for a hardcoded
+        # time, then straighten the wheels and continue in REVERSE_STRAIGHT.
         cfg = self.config
-        self.left.update(self._sector_mean_mm(scan, cfg.left_sector_ros_deg), cfg.side_detect_mm)
-        self.right.update(self._sector_mean_mm(scan, cfg.right_sector_ros_deg), cfg.side_detect_mm)
-
-        if self.left.state == "no_obstacle" and self.left.detect >= cfg.detect_frames:
-            self.left.state = "passing"
-        if self.right.state == "no_obstacle" and self.right.detect >= cfg.detect_frames:
-            self.right.state = "passing"
-
-        if self.left.state == "passing" and self.right.state == "passing":
+        if now_s - self.state_start_s >= cfg.reverse_right_seconds:
             self._enter(ParkingHardState.REVERSE_STRAIGHT, now_s)
         return self._cmd(cfg.reverse_right_speed, cfg.reverse_right_steer, "parking_reverse_right")
 
     def _reverse_straight(self, scan: np.ndarray | None, now_s: float) -> DriveCommand:
+        # Steering centred at 0; keep reversing straight until BOTH sides — LiDAR
+        # raw 90 deg (ROS +90, left) and raw 270 deg (ROS -90, right), each with a
+        # +/-5 deg margin — report *something* within side_detect_mm (100 cm), then
+        # stop.
         cfg = self.config
-        left_mm = self._sector_mean_mm(scan, cfg.left_sector_ros_deg)
-        right_mm = self._sector_mean_mm(scan, cfg.right_sector_ros_deg)
-        self.left.update(left_mm, cfg.side_detect_mm)
-        self.right.update(right_mm, cfg.side_detect_mm)
+        self.left.update(self._sector_min_mm(scan, cfg.left_sector_ros_deg), cfg.side_detect_mm)
+        self.right.update(self._sector_min_mm(scan, cfg.right_sector_ros_deg), cfg.side_detect_mm)
 
-        if self.left.state == "passing" and self.left.clear >= cfg.clear_frames:
-            self.left.state = "out"
-        if self.right.state == "passing" and self.right.clear >= cfg.clear_frames:
-            self.right.state = "out"
-
-        steering = self._centering_steer(left_mm, right_mm)
-
-        if self.left.state == "out" and self.right.state == "out":
+        if self.left.detect >= cfg.detect_frames and self.right.detect >= cfg.detect_frames:
             self._enter(ParkingHardState.REVERSE_PAUSE, now_s)
-        return self._cmd(cfg.reverse_straight_speed, steering, "parking_reverse_straight")
+            return self._cmd(0, 0, "parking_reverse_straight_stop")
+        return self._cmd(cfg.reverse_straight_speed, 0, "parking_reverse_straight")
 
     def _centering_steer(self, left_mm: float, right_mm: float) -> int:
         cfg = self.config
