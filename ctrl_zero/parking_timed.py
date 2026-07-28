@@ -33,7 +33,10 @@ from enum import Enum
 import numpy as np
 
 from ctrl_zero.control import DriveCommand
-from ctrl_zero.lidar import average_distance_mm_in_ros_sector
+from ctrl_zero.lidar import (
+    average_distance_mm_in_ros_sector,
+    min_distance_mm_in_ros_sector,
+)
 
 
 class TimedParkingState(Enum):
@@ -72,7 +75,8 @@ class TimedParkingConfig:
 
     # Speeds (CTRL_ZERO units; + forward, - reverse).
     forward_speed: int = 100
-    reverse_speed: int = -70
+    reverse_speed: int = -70            # ARC_BACK (curved reverse)
+    straight_back_speed: int = -70      # STRAIGHT_BACK (straight reverse) — set separately
 
     # Timed segments (seconds); depend on the drawn start-marker column.
     approach_s: float = 3.65
@@ -163,6 +167,16 @@ class TimedParkingMission:
         )
         return float("inf") if value is None else value
 
+    def _sector_min_mm(
+        self, scan: np.ndarray | None, sector: tuple[float, float]
+    ) -> float:
+        # Nearest return in the sector — "is *something* within range?" — more
+        # robust than the mean, which a wide/partly-empty wedge dilutes.
+        value = min_distance_mm_in_ros_sector(
+            scan, sector[0], sector[1], self.config.raw_angle_for_ros_zero_deg
+        )
+        return float("inf") if value is None else value
+
     def _enter(self, state: TimedParkingState, now_s: float) -> None:
         self.state = state
         self.state_start_s = now_s
@@ -219,8 +233,8 @@ class TimedParkingMission:
 
     def _straight_back(self, scan, now_s: float, elapsed: float) -> DriveCommand:
         cfg = self.config
-        left = self._sector_mean_mm(scan, cfg.left_sector_ros_deg)
-        right = self._sector_mean_mm(scan, cfg.right_sector_ros_deg)
+        left = self._sector_min_mm(scan, cfg.left_sector_ros_deg)
+        right = self._sector_min_mm(scan, cfg.right_sector_ros_deg)
         self.side_tracker.update(
             left <= cfg.side_detect_mm and right <= cfg.side_detect_mm, now_s
         )
@@ -234,7 +248,7 @@ class TimedParkingMission:
             self._enter(TimedParkingState.ABORTED, now_s)
             return DriveCommand(cfg.straight_steer, 0, "parking_sim_straight_back_timeout")
         return DriveCommand(
-            cfg.straight_steer, cfg.reverse_speed, "parking_sim_straight_back"
+            cfg.straight_steer, cfg.straight_back_speed, "parking_sim_straight_back"
         )
 
     def _parked_pause(self, scan, now_s: float, elapsed: float) -> DriveCommand:

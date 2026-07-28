@@ -32,7 +32,7 @@ RUN_MODE = "auto"
 LANE_BACKEND = "yolo"
 
 # Camera
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 CAMERA_BACKEND = "dshow"  # Windows: "dshow" 권장. 필요 시 "msmf" 또는 "any".
 CAMERA_WIDTH = 0
 CAMERA_HEIGHT = 0
@@ -40,14 +40,14 @@ CAMERA_FPS = 0
 
 # Arduino / motor
 USE_ARDUINO = True
-ARDUINO_PORT = "COM6"
+ARDUINO_PORT = "COM3"
 ARDUINO_BAUDRATE = 115200
 DRIVE_MAX_PWM = 255
 
 # LiDAR
 USE_LIDAR = True
-LIDAR_PORT = "COM3"
-LIDAR_POLL_EVERY_N_FRAMES = 2
+LIDAR_PORT = "COM4"
+LIDAR_POLL_EVERY_N_FRAMES = 1
 LIDAR_STOP_DISTANCE_MM = 450.0
 LIDAR_SLOW_DISTANCE_MM = 900.0
 LIDAR_MIN_SPEED_SCALE = 1.0
@@ -90,41 +90,44 @@ OBSTACLE_LOG_EVERY_FRAME = True
 
 # 첫 번째 주차 차량을 확인하는 오른쪽 측면 각도 범위.
 PARKING_SEARCH_SECTOR_ROS_DEG = (270.0, 275.0)
-# 직선 후진 중 왼쪽 주차 차량과의 거리를 확인하는 각도 범위.
-PARKING_LEFT_SECTOR_ROS_DEG = (85.0, 95.0)
-# 직선 후진 중 오른쪽 주차 차량과의 거리를 확인하는 각도 범위.
-PARKING_RIGHT_SECTOR_ROS_DEG = (270.0, 275.0)
+# 직선 후진 중 왼쪽 주차 차량과의 거리를 확인하는 각도 범위 (min<max 폭이 있어야 함!).
+PARKING_LEFT_SECTOR_ROS_DEG = (65.0, 60.0)
+# 직선 후진 중 오른쪽 주차 차량과의 거리를 확인하는 각도 범위 (min<max 폭이 있어야 함!).
+PARKING_RIGHT_SECTOR_ROS_DEG = (295.0, 300.0)
 
 # 탐색 범위의 평균 거리가 이 값(mm) 이하면 첫 번째 차량을 감지한 것으로 판단한다.
 PARKING_SEARCH_DETECT_MM = 2500.0
 # 직선 후진 중 좌우 평균 거리가 모두 이 값(mm) 이하면 정상 주차 완료로 판단한다.
-PARKING_SIDE_DETECT_MM = 1000.0
+PARKING_SIDE_DETECT_MM = 1500.0
 
 # 직진에 사용하는 조향 명령값
 PARKING_STRAIGHT_STEER = 0
 # 첫 차량 탐색, 접근, 출차에 사용하는 전진 PWM 속도.
 PARKING_SEARCH_SPEED = 150
-# 우측 곡선 후진과 직선 후진에 사용하는 후진 PWM 속도.
+# 우측 곡선 후진(ARC_BACK)에 사용하는 후진 PWM 속도.
 PARKING_REVERSE_STRAIGHT_SPEED = -150
+# 직선 후진(STRAIGHT_BACK)에 사용하는 후진 PWM 속도 (곡선 후진과 별도, 음수=후진).
+# 주의: 펌웨어 DRIVE_DEADBAND_PWM=8 이라 |값|이 8 이하면 안 움직인다.
+PARKING_SIM_STRAIGHT_BACK_SPEED = -30
 
 # 첫 번째 차량의 뒤쪽 끝이 탐색 범위에서 사라진 뒤 직진하는 시간(초).
 # 늘리면 전진 스윙을 더 앞쪽에서 시작하고, 줄이면 더 뒤쪽에서 시작한다.
-PARKING_SIM_APPROACH_S = 4.2
+PARKING_SIM_APPROACH_S = 3.8
 # 왼쪽 최대 조향으로 전진하여 차 앞부분을 주차 공간 반대쪽으로 벌리는 시간(초).
 PARKING_SIM_SWING_S = 1.70
 # 오른쪽 최대 조향으로 후진하여 차체를 주차 공간 안으로 회전시키는 시간(초).
-PARKING_SIM_ARC_S = 4.9
+PARKING_SIM_ARC_S = 5.0
 # 전진 스윙 후 정지한 채 바퀴를 오른쪽으로 미리 돌려 놓는 시간(초).
 PARKING_SIM_GEAR_PAUSE_SECONDS = 1.0
 # 좌우 차량 감지에 실패했을 때 직선 후진을 강제로 끝내는 최대 시간(초).
 # 이 타임아웃이 발생하면 자동 출차하지 않고 정지 상태를 유지한다.
-PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS = 3.40
+PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS = 10.0
 
 ## 출차
 # 출차 시작 전 정지 시간(초).
-PARKING_SIM_PARKED_PAUSE_S = 5.0
+PARKING_SIM_PARKED_PAUSE_S = 1.0
 # 조향 0으로 직진 출차하는 시간(초).
-PARKING_SIM_EXIT_APPROACH_S = 2.0
+PARKING_SIM_EXIT_APPROACH_S = 1.2
 # 우측 조향을 유지하며 곡선 전진 출차하는 시간(초).
 PARKING_SIM_EXIT_ARC_S = 7.5
 
@@ -168,11 +171,9 @@ def build_timed_parking_mission() -> TimedParkingMission:
             straight_steer=PARKING_STRAIGHT_STEER,
             forward_speed=PARKING_SIM_FORWARD_SPEED,
             reverse_speed=PARKING_SIM_REVERSE_SPEED,
+            straight_back_speed=PARKING_SIM_STRAIGHT_BACK_SPEED,
             approach_s=PARKING_SIM_APPROACH_S,
-            swing_s=PARKING_SIM_SWING_S,
-            gear_pause_s=PARKING_SIM_GEAR_PAUSE_SECONDS,
-            arc_s=PARKING_SIM_ARC_S,
-            straight_back_max_s=PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS,
+            swing_s=PARKING_SIM_SWING_S,STRAIGHT_BACK_MAX_SECONDS,
             parked_pause_s=PARKING_SIM_PARKED_PAUSE_S,
             exit_approach_s=PARKING_SIM_EXIT_APPROACH_S,
             exit_arc_s=PARKING_SIM_EXIT_ARC_S,

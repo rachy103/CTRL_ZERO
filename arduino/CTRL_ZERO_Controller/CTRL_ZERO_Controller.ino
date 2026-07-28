@@ -24,22 +24,22 @@ const bool STEER_INVERTED = true;
 
 // 가변저항 값 범위: 사용자가 실측한 딱 엣지값.
 const int POT_LEFT = 571;
-const int POT_RIGHT = 437;
-const int POT_MIN_SAFE = 437;
+const int POT_RIGHT = 436;
+const int POT_MIN_SAFE = 436;
 const int POT_MAX_SAFE = 571;
 
-const float STEER_KP = 19.0f; //4.4f
-const float STEER_KI = 20.00f; //60.0f
-const float STEER_KD = 0.10f; // 0.05f
-const int STEER_FF_PWM = 10; //55
+const float STEER_KP = 6.0f; //4.4f
+const float STEER_KI = 0.03f; //60.0f
+const float STEER_KD = 0.1f; // 0.05f
+const int STEER_FF_PWM = 90.0; //55
 const int STEER_MAX_PWM = 255;
-const int STEER_DEADBAND_CNT = 1; //6
+const int STEER_DEADBAND_CNT = 0; //6
 const float STEER_SLEW_PER_MS = 1.0f;
 
 // --- PID structure (time-correct integral + anti-windup + hold) -------------
 const float STEER_I_LIMIT_PWM = 40.0f;   // anti-windup: cap on PWM the I-term may contribute
 const int   STEER_I_BAND_CNT  = 15;      // integrate ONLY when |err| <= this (counts), i.e. near target
-const int   STEER_POT_SAMPLES = 4;       // analogRead averaging to cut ADC noise
+const int   STEER_POT_SAMPLES = 8;       // analogRead averaging to cut ADC noise
 const bool  STEER_BRAKE_ON_HOLD = true;  // hold via active brake (both pins HIGH); false = coast
 
 const int DRIVE_MAX_PWM = 255;
@@ -176,20 +176,20 @@ void updateSteerPID(float dt) {
     return;
   }
 
-  float dt_s = dt / 1000.0f;  // dt arrives in milliseconds; integrate in seconds
+  // dt arrives in milliseconds; integrate in seconds
 
   // Conditional integration + anti-windup: only accumulate near the target, and
   // clamp so the I-term can never exceed STEER_I_LIMIT_PWM.  This is what closes
   // the stiction dead-zone (what the constant feedforward used to cover, badly).
   if (STEER_KI > 0.0f && abs(err) <= STEER_I_BAND_CNT) {
-    steerIntegral += err * dt_s;
+    steerIntegral += err * dt;
     float iLimit = STEER_I_LIMIT_PWM / STEER_KI;
     steerIntegral = constrain(steerIntegral, -iLimit, iLimit);
   } else {
     steerIntegral = 0.0f;  // far from target (or KI off): no integral action
   }
 
-  float deriv = (dt_s > 0.0f) ? (err - lastPotErr) / dt_s : 0.0f;
+  float deriv = (dt > 0.0f) ? (err - lastPotErr) / dt : 0.0f;
   lastPotErr = err;
 
   float u = STEER_KP * err + STEER_KI * steerIntegral + STEER_KD * deriv;
