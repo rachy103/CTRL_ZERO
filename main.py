@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import threading
 import time
 from pathlib import Path
 
@@ -173,7 +174,10 @@ def build_timed_parking_mission() -> TimedParkingMission:
             reverse_speed=PARKING_SIM_REVERSE_SPEED,
             straight_back_speed=PARKING_SIM_STRAIGHT_BACK_SPEED,
             approach_s=PARKING_SIM_APPROACH_S,
-            swing_s=PARKING_SIM_SWING_S,STRAIGHT_BACK_MAX_SECONDS,
+            swing_s=PARKING_SIM_SWING_S,
+            gear_pause_s=PARKING_SIM_GEAR_PAUSE_SECONDS,
+            arc_s=PARKING_SIM_ARC_S,
+            straight_back_max_s=PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS,
             parked_pause_s=PARKING_SIM_PARKED_PAUSE_S,
             exit_approach_s=PARKING_SIM_EXIT_APPROACH_S,
             exit_arc_s=PARKING_SIM_EXIT_ARC_S,
@@ -248,10 +252,16 @@ REVERSE_STEER = False
 MAX_HOLD_FRAMES = 6
 HOLD_DECEL_STEP = 6
 
-# Manual mode
+# Manual mode (--mode manual): hold-to-drive, KartRider style (pynput).
+MANUAL_DRIVE_POWER = 150    # W/S = forward/back, fixed 150 PWM WHILE HELD
+MANUAL_STEER_POWER = 100    # A/D = steer, fixed +/-100 WHILE HELD
+# Legacy tap values (only the space->manual fallback inside the auto loop).
 MANUAL_SPEED_STEP = 10
-MANUAL_STEER_POWER = 80
 MANUAL_STEER_HOLD_MS = 180
+
+# Frame capture (--capture-frame; in manual mode press 'c' to start/stop).
+CAPTURE_DIR = BASE_DIR / "captures"
+CAPTURE_FPS = 30
 
 # Display/logging
 DISPLAY_ENABLED = True
@@ -280,6 +290,74 @@ def parse_ratio_point(value: str) -> tuple[float, float]:
 
 def is_start_key(key: int) -> bool:
     return key in START_KEYS
+
+
+class ManualInput:
+    """System-wide keyboard state for hold-to-drive manual mode (pynput).
+
+    Listens globally so keys register even without the OpenCV window focused;
+    'q' quits and 'c' toggles capture from anywhere. Only used in --mode manual.
+    """
+
+    def __init__(self) -> None:
+        self._held = set()
+        self._quit = False
+        self._toggle_capture = False
+        self._lock = threading.Lock()
+        self._listener = None
+
+    def start(self) -> None:
+        from pynput import keyboard
+
+        self._listener = keyboard.Listener(
+            on_press=self._on_press, on_release=self._on_release
+        )
+        self._listener.daemon = True
+        self._listener.start()
+
+    @staticmethod
+    def _char(key):
+        try:
+            return key.char.lower()
+        except AttributeError:
+            return None
+
+    def _on_press(self, key) -> None:
+        c = self._char(key)
+        if c is None:
+            return
+        with self._lock:
+            if c in ("w", "s", "a", "d"):
+                self._held.add(c)
+            elif c == "q":
+                self._quit = True
+            elif c == "c":
+                self._toggle_capture = True
+
+    def _on_release(self, key) -> None:
+        c = self._char(key)
+        if c is None:
+            return
+        with self._lock:
+            self._held.discard(c)
+
+    def held(self, c: str) -> bool:
+        with self._lock:
+            return c in self._held
+
+    def quit_requested(self) -> bool:
+        with self._lock:
+            return self._quit
+
+    def take_capture_toggle(self) -> bool:
+        with self._lock:
+            v = self._toggle_capture
+            self._toggle_capture = False
+            return v
+
+    def stop(self) -> None:
+        if self._listener is not None:
+            self._listener.stop()
 
 
 def read_console_key() -> int:
@@ -392,6 +470,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-arduino", action="store_true")
     parser.add_argument("--list-ports", action="store_true")
     parser.add_argument("--no-display", action="store_true")
+    parser.add_argument("--capture-frame", action="store_true",
+                        help="manual mode: press 'c' to start/stop 30 fps frame capture to captures/")
     parser.add_argument("--log", action="store_true")
     parser.add_argument("--no-log", action="store_true")
     return parser
@@ -502,7 +582,7 @@ def main() -> None:
         )
     )
 
-    lane_detector = None if parking_sim else build_lane_detector(args)
+    lane_detector = None if (parking_sim or args.mode == "manual") else build_lane_detector(args)
     lidar_config = LidarConfig(
         port=LIDAR_PORT,
         front_min_ros_deg=OBSTACLE_LIDAR_MIN_ROS_DEG,
@@ -610,6 +690,70 @@ def main() -> None:
                     drive_started = True
                     print("Drive started.")
                 time.sleep(0.02)
+            return
+
+        if args.mode == "manual":
+            # Hold-to-drive (KartRider style): W/S=fwd/back, A/D=steer, only WHILE
+            # held (release = stop). No YOLO/LiDAR -> light enough for 30 fps capture.
+            manual_input = ManualInput()
+            manual_input.start()
+            cap_active = False
+            cap_count = 0
+            cap_last_s = 0.0
+            cap_dir = None
+            print("MANUAL hold-to-drive: hold W/S = fwd/back @150, A/D = steer @100. q = quit.")
+            if args.capture_frame:
+                print("  --capture-frame ON: press 'c' to start/stop 30 fps capture -> captures/.")
+            try:
+                while True:
+                    ret, frame = camera.read()
+                    if not ret or frame is None:
+                        print("Camera frame read failed.")
+                        break
+                    frame_count += 1
+                    if manual_input.quit_requested():
+                        break
+
+                    speed = (
+                        MANUAL_DRIVE_POWER if manual_input.held("w")
+                        else -MANUAL_DRIVE_POWER if manual_input.held("s")
+                        else 0
+                    )
+                    steer = (
+                        MANUAL_STEER_POWER if manual_input.held("d")
+                        else -MANUAL_STEER_POWER if manual_input.held("a")
+                        else 0
+                    )
+                    motor.send(steer, speed if motor_enabled else 0)
+
+                    if args.capture_frame and manual_input.take_capture_toggle():
+                        cap_active = not cap_active
+                        if cap_active and cap_dir is None:
+                            cap_dir = CAPTURE_DIR / time.strftime("manual_%Y%m%d_%H%M%S")
+                            cap_dir.mkdir(parents=True, exist_ok=True)
+                        print(
+                            f"Capture {'STARTED -> ' + str(cap_dir) if cap_active else 'stopped'}",
+                            flush=True,
+                        )
+                    if cap_active and cap_dir is not None:
+                        now = time.time()
+                        if now - cap_last_s >= 1.0 / CAPTURE_FPS:
+                            cap_last_s = now
+                            cv2.imwrite(str(cap_dir / f"frame_{cap_count:06d}.jpg"), frame)
+                            cap_count += 1
+
+                    if display_enabled:
+                        disp = frame.copy()
+                        cv2.putText(
+                            disp,
+                            f"MANUAL steer={steer:+d} speed={speed:+d} cap={'ON' if cap_active else 'off'}",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA,
+                        )
+                        cv2.imshow("CTRL_ZERO", disp)
+                        if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                            break
+            finally:
+                manual_input.stop()
             return
 
         while True:
