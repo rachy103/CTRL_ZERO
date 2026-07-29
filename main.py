@@ -92,7 +92,7 @@ OBSTACLE_LIDAR_MIN_ROS_DEG = -20.0
 OBSTACLE_LIDAR_MAX_ROS_DEG = 20.0
 # Print the full per-frame obstacle diagnostic (phase, lane, every gate, trigger
 # reason, far_y value) to the console.  Set False to only log detect/clear.
-OBSTACLE_LOG_EVERY_FRAME = True
+OBSTACLE_LOG_EVERY_FRAME = False
 
 # --mode parking_sim: LiDAR + 시간 기반 직각 주차/출차 설정 -----------------
 # LiDAR 각도는 ROS 기준이다: 정면=180도, 왼쪽=+90도, 오른쪽=-90도(=270도).
@@ -404,13 +404,13 @@ CONTROL_MODE = "contest"  # "contest" uses angle/position weights.
 MIN_SPEED = 230
 MAX_SPEED = 255
 MIN_LANE_CONFIDENCE_TO_DRIVE = 0.45
-CONTEST_ANGLE_WEIGHT = 0.45
+CONTEST_ANGLE_WEIGHT = 0.4
 CONTEST_POSITION_WEIGHT = 0.10
 CONTEST_STEERING_ANGLE_NORM_DEG = 50.0
 CONTEST_STEER_LIMIT = 10.0
 
 # Common steering limits & safety
-MAX_STEER = 80
+MAX_STEER = 100
 REVERSE_STEER = False
 MAX_HOLD_FRAMES = 6
 HOLD_DECEL_STEP = 6
