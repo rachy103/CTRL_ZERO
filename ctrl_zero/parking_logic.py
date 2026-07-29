@@ -32,6 +32,7 @@ from ctrl_zero.lidar import min_distance_mm_in_ros_sector
 
 class ParkingLogicState(Enum):
     SEARCH = 1
+    FORWARD_AFTER_DETECT = 10  # creep forward a little past the first car
     REVERSE_BACK = 2
     TURN_LEFT = 3
     LINE_FOLLOW = 4
@@ -70,6 +71,7 @@ class ParkingLogicConfig:
     exit_arc_steer: int = 100
 
     # Durations (seconds).
+    forward_after_detect_s: float = 1.0  # drive forward this long after the first car
     back_s: float = 1.0                # "x1": straight reverse after first car
     turn_s: float = 6.7                # full-left driving time
     follow_max_s: float = 12.0         # safety cap on the line-follow reverse
@@ -147,6 +149,7 @@ class ParkingLogicMission:
         self._elapsed = elapsed
         handler = {
             ParkingLogicState.SEARCH: self._search,
+            ParkingLogicState.FORWARD_AFTER_DETECT: self._forward_after_detect,
             ParkingLogicState.REVERSE_BACK: self._reverse_back,
             ParkingLogicState.TURN_LEFT: self._turn_left,
             ParkingLogicState.LINE_FOLLOW: self._line_follow,
@@ -177,11 +180,21 @@ class ParkingLogicMission:
             if self._detect_since is None:
                 self._detect_since = now_s
             if now_s - self._detect_since >= cfg.detect_hold_s:
-                self._enter(ParkingLogicState.REVERSE_BACK, now_s)
-                return DriveCommand(cfg.back_steer, cfg.back_speed, "parking_logic_back_start")
+                self._enter(ParkingLogicState.FORWARD_AFTER_DETECT, now_s)
+                return DriveCommand(cfg.straight_steer, cfg.search_speed,
+                                    "parking_logic_forward_after_detect")
         else:
             self._detect_since = None
         return DriveCommand(cfg.straight_steer, cfg.search_speed, "parking_logic_search")
+
+    def _forward_after_detect(self, scan, now_s: float, elapsed: float) -> DriveCommand:
+        # Straight forward past the first car, then start the right-lock reverse.
+        cfg = self.config
+        if elapsed >= cfg.forward_after_detect_s:
+            self._enter(ParkingLogicState.REVERSE_BACK, now_s)
+            return DriveCommand(cfg.back_steer, cfg.back_speed, "parking_logic_back_start")
+        return DriveCommand(cfg.straight_steer, cfg.search_speed,
+                            "parking_logic_forward_after_detect")
 
     def _reverse_back(self, scan, now_s: float, elapsed: float) -> DriveCommand:
         cfg = self.config

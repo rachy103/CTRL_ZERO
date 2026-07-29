@@ -184,9 +184,10 @@ PARKING_GUIDE_STEER_LIMIT = 60            # 가이드 조향 클램프
 # 첫 차 감지 -> x1초 직선 후진 -> 좌 풀락 6.7초 주행 -> 후방캠 하단 ROI에서
 # 끊긴 주차선을 연장해 그린 프레임으로 YOLO(final openvino)를 돌려 조향하며 후진.
 PARKING_LOGIC_REAR_CAMERA_INDEX = 0       # 후방 카메라 인덱스 (probe_cameras.py로 확인)
-PARKING_LOGIC_BACK_S = 0.0                # x1: 첫 차 감지 후 우회전 후진 시간(초)
+PARKING_LOGIC_FORWARD_AFTER_DETECT_S = 1.5  # 첫 차 감지 후 직진 전진 시간(초)
+PARKING_LOGIC_BACK_S = 1.0                # x1: 첫 차 감지 후 우회전 후진 시간(초)
 PARKING_LOGIC_BACK_STEER = 100            # 후진 중 조향: +100 = 우 최대
-PARKING_LOGIC_TURN_S = 5.7                # 좌 풀락 주행 시간(초)
+PARKING_LOGIC_TURN_S = 5.0                # 좌 풀락 주행 시간(초)
 PARKING_LOGIC_TURN_STEER = -100           # 좌 최대 조향
 PARKING_LOGIC_SEARCH_SPEED = 150
 PARKING_LOGIC_BACK_SPEED = -150
@@ -195,7 +196,7 @@ PARKING_LOGIC_FOLLOW_SPEED = -80          # 주차선 추종 후진 속도
 PARKING_LOGIC_FOLLOW_MAX_S = 20.0         # 추종 후진 안전 타임아웃(초)
 # 후진(LINE_FOLLOW) 시작 후 이 시간 동안은 모든 센서를 무시하고 직선 후진만 한다.
 # 이 구간에는 슬롯 모델·차선 모델·Hough를 아예 돌리지 않는다.
-PARKING_LOGIC_FOLLOW_OPEN_LOOP_S = 5.7
+PARKING_LOGIC_FOLLOW_OPEN_LOOP_S = 4.0
 # far_y 정지 후 카메라 조향 없이 직선으로 더 후진하는 시간(초).
 PARKING_LOGIC_FINAL_BACK_S = 3.0
 ## 출차 (parking_sim과 동일한 3단계: 정차 -> 직진 전진 -> 우 풀락 곡선 전진)
@@ -210,7 +211,7 @@ PARKING_LOGIC_HEADING_GAIN = 1.7
 PARKING_LOGIC_OFFSET_GAIN = 40.0
 PARKING_LOGIC_STEER_LIMIT = 80
 # SEARCH 직진 구간의 소실점(VP) 가이드 — 전방캠 사용(parking_sim과 동일 기하).
-PARKING_LOGIC_GUIDE_VP_GAIN = 60.0
+PARKING_LOGIC_GUIDE_VP_GAIN = 50.0
 PARKING_LOGIC_GUIDE_STEER_LIMIT = 60
 # 후진 정지 보강: 후방캠에서 흰색 horizontal line(주차 베이 끝선)의 far_y 비율이
 # 이 값 이상이면 정지한다. 라이다 측면 감지만으로는 차선이 시야에서 사라진 뒤
@@ -227,8 +228,8 @@ PARKING_LOGIC_BEST_CONF = 0.4
 # 이어 그린 뒤, 그 프레임으로 기존 YOLO 모델을 돌린다.
 PARKING_LINE_ROI_TOP_RATIO = 0.1         # 프레임 위쪽 이 비율은 잘라냄(검게)
 PARKING_LINE_WHITE_THRESH = 180           # 흰 선 밝기 임계
-PARKING_LINE_HOUGH_THRESHOLD = 30
-PARKING_LINE_MIN_LINE_FRAC = 0.12         # 대시 최소 길이 = ROI 높이 비율
+PARKING_LINE_HOUGH_THRESHOLD = 120
+PARKING_LINE_MIN_LINE_FRAC = 0.35         # 대시 최소 길이 = ROI 높이 비율
 PARKING_LINE_MAX_GAP_PX = 40
 PARKING_LINE_VERTICAL_MAX_DEV_DEG = 45.0  # 수직에서 이 이내 = 주차선 대시(유지+연장)
 # 같은 물리적 주차선의 대시들을 하나로 묶는 기준: ROI 바닥 교차점 x와 각도가 이내면 동일선.
@@ -265,6 +266,7 @@ def build_parking_logic_mission() -> ParkingLogicMission:
             back_speed=PARKING_LOGIC_BACK_SPEED,
             turn_speed=PARKING_LOGIC_TURN_SPEED,
             follow_speed=PARKING_LOGIC_FOLLOW_SPEED,
+            forward_after_detect_s=PARKING_LOGIC_FORWARD_AFTER_DETECT_S,
             back_s=PARKING_LOGIC_BACK_S,
             turn_s=PARKING_LOGIC_TURN_S,
             follow_max_s=PARKING_LOGIC_FOLLOW_MAX_S,
