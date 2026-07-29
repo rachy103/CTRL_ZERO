@@ -24,21 +24,21 @@ const bool STEER_INVERTED = true;
 
 // 가변저항 값 범위: 사용자가 실측한 딱 엣지값.
 const int POT_LEFT = 571;
-const int POT_RIGHT = 436;
-const int POT_MIN_SAFE = 436;
+const int POT_RIGHT = 437;
+const int POT_MIN_SAFE = 437;
 const int POT_MAX_SAFE = 571;
 
-const float STEER_KP = 6.0f; //4.4f
-const float STEER_KI = 0.03f; //60.0f
-const float STEER_KD = 0.1f; // 0.05f
+const float STEER_KP = 4.4f; //4.4f
+const float STEER_KI = 0.05f; //60.0f
+const float STEER_KD = 0.05f; // 0.05f
 const int STEER_FF_PWM = 90.0; //55
 const int STEER_MAX_PWM = 255;
-const int STEER_DEADBAND_CNT = 0; //6
+const int STEER_DEADBAND_CNT = 6; //6
 const float STEER_SLEW_PER_MS = 1.0f;
 
 // --- PID structure (time-correct integral + anti-windup + hold) -------------
-const float STEER_I_LIMIT_PWM = 40.0f;   // anti-windup: cap on PWM the I-term may contribute
-const int   STEER_I_BAND_CNT  = 15;      // integrate ONLY when |err| <= this (counts), i.e. near target
+const float STEER_I_LIMIT_PWM = 10.0f;   // anti-windup: cap on PWM the I-term may contribute
+const int   STEER_I_BAND_CNT  = 5;      // integrate ONLY when |err| <= this (counts), i.e. near target
 const int   STEER_POT_SAMPLES = 8;       // analogRead averaging to cut ADC noise
 const bool  STEER_BRAKE_ON_HOLD = true;  // hold via active brake (both pins HIGH); false = coast
 

@@ -12,7 +12,10 @@ TRAFFIC_LIGHT_UNKNOWN = "unknown"
 TRAFFIC_LIGHT_RED = "red"
 TRAFFIC_LIGHT_YELLOW = "yellow"
 TRAFFIC_LIGHT_GREEN = "green"
-TRAFFIC_LIGHT_STOP_STATES = (TRAFFIC_LIGHT_RED, TRAFFIC_LIGHT_YELLOW)
+# Only a dominant RED stops.  Green drives, and so does a traffic light that is
+# detected but shows no lit lamp (state UNKNOWN) — an unlit signal must not
+# strand the car.
+TRAFFIC_LIGHT_STOP_STATES = (TRAFFIC_LIGHT_RED,)
 DEFAULT_TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.010
 
 
@@ -21,6 +24,11 @@ class TrafficLightConfig:
     min_confidence: float = 0.20
     min_color_ratio: float = 0.015
     min_color_pixels: int = 6
+    # RGB dominance test.  A pixel votes red when R beats both G and B by
+    # min_channel_margin (green likewise), and only counts when it is bright
+    # enough to be a lit lamp rather than dark housing.
+    min_channel_margin: int = 30
+    min_lit_value: int = 90
 
 
 def is_traffic_light_name(class_name: str) -> bool:
@@ -90,7 +98,9 @@ def traffic_light_state_from_objects(
         parsed = parse_traffic_light_state(obj.class_name)
         states.append(parsed if parsed != TRAFFIC_LIGHT_UNKNOWN else classify_traffic_light_crop(frame, obj.bbox, config))
 
-    for state in (TRAFFIC_LIGHT_RED, TRAFFIC_LIGHT_YELLOW, TRAFFIC_LIGHT_GREEN):
+    # Red wins over green when several lights are visible: stopping is the safe
+    # tie-break.  UNKNOWN (no lamp lit) falls through and drives.
+    for state in (TRAFFIC_LIGHT_RED, TRAFFIC_LIGHT_GREEN):
         if state in states:
             return state
     return TRAFFIC_LIGHT_UNKNOWN
@@ -118,16 +128,22 @@ def classify_traffic_light_crop(
     if crop.size == 0:
         return TRAFFIC_LIGHT_UNKNOWN
 
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    red = cv2.inRange(hsv, (0, 70, 60), (10, 255, 255)) | cv2.inRange(hsv, (160, 70, 60), (179, 255, 255))
-    yellow = cv2.inRange(hsv, (15, 70, 70), (40, 255, 255))
-    green = cv2.inRange(hsv, (45, 60, 50), (95, 255, 255))
+    # RGB dominance: count pixels where one channel clearly beats the others and
+    # the pixel is bright enough to be a lit lamp.  Whichever of red / green wins
+    # is the state; if neither clears the threshold the lamp is off (UNKNOWN),
+    # which drives.
+    bgr = crop.astype(np.int16)
+    blue, green_c, red_c = bgr[:, :, 0], bgr[:, :, 1], bgr[:, :, 2]
+    value = bgr.max(axis=2)
+    lit = value >= config.min_lit_value
 
-    scores = {
-        TRAFFIC_LIGHT_RED: int(cv2.countNonZero(red)),
-        TRAFFIC_LIGHT_YELLOW: int(cv2.countNonZero(yellow)),
-        TRAFFIC_LIGHT_GREEN: int(cv2.countNonZero(green)),
-    }
-    state, pixels = max(scores.items(), key=lambda item: item[1])
+    red_mask = lit & (red_c - np.maximum(green_c, blue) >= config.min_channel_margin)
+    green_mask = lit & (green_c - np.maximum(red_c, blue) >= config.min_channel_margin)
+
+    red_px = int(red_mask.sum())
+    green_px = int(green_mask.sum())
     threshold = max(config.min_color_pixels, int(crop.shape[0] * crop.shape[1] * config.min_color_ratio))
-    return state if pixels >= threshold else TRAFFIC_LIGHT_UNKNOWN
+
+    if max(red_px, green_px) < threshold:
+        return TRAFFIC_LIGHT_UNKNOWN  # detected, but no lamp lit -> go
+    return TRAFFIC_LIGHT_RED if red_px >= green_px else TRAFFIC_LIGHT_GREEN

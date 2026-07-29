@@ -14,7 +14,15 @@ from ctrl_zero.control import DriveCommand, DriveConfig, DriveController
 from ctrl_zero.lidar import LidarConfig, LidarReader, ObstacleDecision, analyze_obstacles
 from ctrl_zero.logger import DriveLogger, LogConfig
 from ctrl_zero.obstacles import ContestObstacleMission, ContestObstacleMissionConfig
+from ctrl_zero.parking_logic import ParkingLogicConfig, ParkingLogicMission
 from ctrl_zero.parking_timed import TimedParkingConfig, TimedParkingMission
+from ctrl_zero.vision.parking_line import (
+    ParkingLineConfig,
+    prepare_infinite_lane_frame,
+    prepare_parking_line_frame,
+    vanishing_point,
+)
+from ctrl_zero.vision.parking_slot import ParkingSlotDetector, best_slot
 from ctrl_zero.safety import SafetyDecision, build_safety_decision
 from ctrl_zero.traffic_light import traffic_light_object
 from ctrl_zero.ui import draw_status
@@ -33,7 +41,7 @@ RUN_MODE = "auto"
 LANE_BACKEND = "yolo"
 
 # Camera
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 CAMERA_BACKEND = "dshow"  # Windows: "dshow" 권장. 필요 시 "msmf" 또는 "any".
 CAMERA_WIDTH = 0
 CAMERA_HEIGHT = 0
@@ -87,14 +95,14 @@ OBSTACLE_LIDAR_MAX_ROS_DEG = 20.0
 OBSTACLE_LOG_EVERY_FRAME = True
 
 # --mode parking_sim: LiDAR + 시간 기반 직각 주차/출차 설정 -----------------
-# LiDAR 각도는 ROS 기준이다: 정면=0도, 왼쪽=+90도, 오른쪽=-90도(=270도).
+# LiDAR 각도는 ROS 기준이다: 정면=180도, 왼쪽=+90도, 오른쪽=-90도(=270도).
 
 # 첫 번째 주차 차량을 확인하는 오른쪽 측면 각도 범위.
 PARKING_SEARCH_SECTOR_ROS_DEG = (270.0, 275.0)
 # 직선 후진 중 왼쪽 주차 차량과의 거리를 확인하는 각도 범위 (min<max 폭이 있어야 함!).
-PARKING_LEFT_SECTOR_ROS_DEG = (65.0, 60.0)
+PARKING_LEFT_SECTOR_ROS_DEG = (70.0, 90.0)
 # 직선 후진 중 오른쪽 주차 차량과의 거리를 확인하는 각도 범위 (min<max 폭이 있어야 함!).
-PARKING_RIGHT_SECTOR_ROS_DEG = (295.0, 300.0)
+PARKING_RIGHT_SECTOR_ROS_DEG = (270.0, 290.0)
 
 # 탐색 범위의 평균 거리가 이 값(mm) 이하면 첫 번째 차량을 감지한 것으로 판단한다.
 PARKING_SEARCH_DETECT_MM = 2500.0
@@ -126,9 +134,9 @@ PARKING_SIM_STRAIGHT_BACK_MAX_SECONDS = 10.0
 
 ## 출차
 # 출차 시작 전 정지 시간(초).
-PARKING_SIM_PARKED_PAUSE_S = 1.0
+PARKING_SIM_PARKED_PAUSE_S = 4.0
 # 조향 0으로 직진 출차하는 시간(초).
-PARKING_SIM_EXIT_APPROACH_S = 1.2
+PARKING_SIM_EXIT_APPROACH_S = 2.0
 # 우측 조향을 유지하며 곡선 전진 출차하는 시간(초).
 PARKING_SIM_EXIT_ARC_S = 7.5
 
@@ -152,6 +160,161 @@ PARKING_SIM_CLEAR_HOLD_SECONDS = 0.0
 # 직선 후진 중 좌우 차량이 모두 가까운 상태로 유지되어야 하는 최소 시간(초).
 # 0이면 한 번의 측정만으로 정상 주차 완료를 판단한다.
 PARKING_SIM_SIDE_HOLD_SECONDS = 0.0
+
+## 첫 직진(SEARCH/APPROACH) 카메라 헤딩 가이드 — 모델 기반.
+# 왼쪽 ROI만 남기고(나머지 검게), horizontal 흰 선을 모델 추론 전에 지운 뒤,
+# 기존 YOLO 차선 모델을 돌려 나온 driving area의 heading/offset으로 조향한다.
+# (전처리는 parking_logic과 동일한 ctrl_zero/vision/parking_line.py를 공유)
+PARKING_SIM_USE_CAMERA_GUIDE = True
+PARKING_GUIDE_ROI_LEFT_RATIO = 0.5        # 왼쪽에서 이 비율만큼만 모델에 보임
+PARKING_GUIDE_ROI_TOP_RATIO = 0.20        # 위쪽 이 비율은 잘라냄(원경/천장)
+# 전방캠은 원근 때문에 차선이 이미지상 많이 기울어 보임 -> 가이드 전용 각도 임계.
+# (parking_logic 후방캠의 PARKING_LINE_*와 별개)
+PARKING_GUIDE_VERTICAL_MAX_DEV_DEG = 75.0   # 수직에서 이 이내면 차선 대시로 유지+연장
+PARKING_GUIDE_HORIZONTAL_MIN_DEV_DEG = 85.0 # 이 이상만 horizontal로 보고 지움
+# 조향 = 소실점(VP) 홀드. 두 선이 실제 평행이면, 차가 그 선들과 평행한 순간
+# 두 선의 이미지 교점(소실점)이 화면 중앙 x에 온다 — 측방 위치와 무관, 요(yaw)만
+# 반영되는 불변량이라 기준값 캘리브레이션이 필요 없다.
+#   steer = VP_GAIN * (vp_x - cx) / cx
+PARKING_GUIDE_VP_GAIN = 60.0              # 반대로 꺾이면 부호 반전
+PARKING_GUIDE_STEER_LIMIT = 60            # 가이드 조향 클램프
+
+
+# --mode parking_logic: 후방카메라 주차선 후진 진입 ---------------------------
+# 첫 차 감지 -> x1초 직선 후진 -> 좌 풀락 6.7초 주행 -> 후방캠 하단 ROI에서
+# 끊긴 주차선을 연장해 그린 프레임으로 YOLO(final openvino)를 돌려 조향하며 후진.
+PARKING_LOGIC_REAR_CAMERA_INDEX = 0       # 후방 카메라 인덱스 (probe_cameras.py로 확인)
+PARKING_LOGIC_BACK_S = 0.0                # x1: 첫 차 감지 후 우회전 후진 시간(초)
+PARKING_LOGIC_BACK_STEER = 100            # 후진 중 조향: +100 = 우 최대
+PARKING_LOGIC_TURN_S = 5.7                # 좌 풀락 주행 시간(초)
+PARKING_LOGIC_TURN_STEER = -100           # 좌 최대 조향
+PARKING_LOGIC_SEARCH_SPEED = 150
+PARKING_LOGIC_BACK_SPEED = -150
+PARKING_LOGIC_TURN_SPEED = 150
+PARKING_LOGIC_FOLLOW_SPEED = -80          # 주차선 추종 후진 속도
+PARKING_LOGIC_FOLLOW_MAX_S = 20.0         # 추종 후진 안전 타임아웃(초)
+# 후진(LINE_FOLLOW) 시작 후 이 시간 동안은 모든 센서를 무시하고 직선 후진만 한다.
+# 이 구간에는 슬롯 모델·차선 모델·Hough를 아예 돌리지 않는다.
+PARKING_LOGIC_FOLLOW_OPEN_LOOP_S = 5.7
+# far_y 정지 후 카메라 조향 없이 직선으로 더 후진하는 시간(초).
+PARKING_LOGIC_FINAL_BACK_S = 3.0
+## 출차 (parking_sim과 동일한 3단계: 정차 -> 직진 전진 -> 우 풀락 곡선 전진)
+PARKING_LOGIC_PARKED_PAUSE_S = PARKING_SIM_PARKED_PAUSE_S
+PARKING_LOGIC_EXIT_APPROACH_S = PARKING_SIM_EXIT_APPROACH_S
+PARKING_LOGIC_EXIT_ARC_S = PARKING_SIM_EXIT_ARC_S
+PARKING_LOGIC_EXIT_ARC_STEER = PARKING_SIM_EXIT_ARC_STEER
+# 주차선 추종 조향 = sign * (heading_gain*heading_deg + offset_gain*offset_norm)
+# 후진이라 조향 부호가 반대일 수 있음: 반대로 꺾이면 SIGN을 +1로.
+PARKING_LOGIC_REVERSE_STEER_SIGN = -1
+PARKING_LOGIC_HEADING_GAIN = 1.7
+PARKING_LOGIC_OFFSET_GAIN = 40.0
+PARKING_LOGIC_STEER_LIMIT = 80
+# SEARCH 직진 구간의 소실점(VP) 가이드 — 전방캠 사용(parking_sim과 동일 기하).
+PARKING_LOGIC_GUIDE_VP_GAIN = 60.0
+PARKING_LOGIC_GUIDE_STEER_LIMIT = 60
+# 후진 정지 보강: 후방캠에서 흰색 horizontal line(주차 베이 끝선)의 far_y 비율이
+# 이 값 이상이면 정지한다. 라이다 측면 감지만으로는 차선이 시야에서 사라진 뒤
+# 헤딩 제어가 망가지므로, 이쪽이 더 직접적인 신호다.
+PARKING_LOGIC_STOP_FAR_Y_RATIO = 0.8
+
+# --best-model: 슬롯 모델(bbox)로 탐색 범위를 잡고, 세로선을 프레임 전체로 연장한
+# 합성 프레임을 기존 차선 모델에 입력해 후진을 제어한다. keypoint는 쓰지 않는다.
+PARKING_LOGIC_BEST_MODEL_PATH = BASE_DIR / "models" / "yolo" / "parking_v2_openvino_model"
+PARKING_LOGIC_BEST_CONF = 0.4
+# 슬롯 bbox 미검출 프레임: 직전 bbox를 중심 고정한 채 이 배율로 키워서 사용한다.
+# 주차선 전처리 (ctrl_zero/vision/parking_line.py):
+# ① horizontal 흰 선은 모델 추론 전에 지우고(검게), ② 끊긴 세로 대시는 연장해
+# 이어 그린 뒤, 그 프레임으로 기존 YOLO 모델을 돌린다.
+PARKING_LINE_ROI_TOP_RATIO = 0.1         # 프레임 위쪽 이 비율은 잘라냄(검게)
+PARKING_LINE_WHITE_THRESH = 180           # 흰 선 밝기 임계
+PARKING_LINE_HOUGH_THRESHOLD = 30
+PARKING_LINE_MIN_LINE_FRAC = 0.12         # 대시 최소 길이 = ROI 높이 비율
+PARKING_LINE_MAX_GAP_PX = 40
+PARKING_LINE_VERTICAL_MAX_DEV_DEG = 45.0  # 수직에서 이 이내 = 주차선 대시(유지+연장)
+# 같은 물리적 주차선의 대시들을 하나로 묶는 기준: ROI 바닥 교차점 x와 각도가 이내면 동일선.
+PARKING_LINE_MERGE_X_TOL_PX = 40
+PARKING_LINE_MERGE_ANGLE_TOL_DEG = 8.0
+# 증거(대시 총 길이)가 강한 상위 N개 클러스터만 연장해 그림. 베이 좌우 2줄 = 2.
+PARKING_LINE_MAX_LINES = 2
+PARKING_LINE_HORIZONTAL_MIN_DEV_DEG = 60.0  # 수직에서 이 이상 = horizontal(지움)
+# 이 높이 비율보다 아래(화면 맨 끝쪽)의 horizontal은 far_y로 인정하지 않는다.
+# 후방 시야 맨 아래는 베이 끝선이 아니라 바닥 마감선/매트 경계라 far_y=1.00으로
+# 즉시 정지시켜 버렸다. 따라서 far_y는 이 값을 넘을 수 없다.
+PARKING_LINE_HORIZONTAL_MAX_Y_RATIO = 0.9
+# 베이 끝선으로 인정할 가로선의 최소 길이(프레임 폭 대비 비율).
+# 바닥의 옅은 얼룩이 짧은 "가로선"으로 잡혀 far_y를 띄우는 것을 막는다.
+PARKING_LINE_HORIZONTAL_MIN_LEN_FRAC = 0.5
+PARKING_LINE_EXTEND_THICKNESS_PX = 7
+PARKING_LINE_ERASE_THICKNESS_PX = 15      # horizontal 지울 때 붓 두께
+
+
+def build_parking_logic_mission() -> ParkingLogicMission:
+    return ParkingLogicMission(
+        ParkingLogicConfig(
+            raw_angle_for_ros_zero_deg=LIDAR_RAW_ANGLE_FOR_ROS_ZERO_DEG,
+            search_sector_ros_deg=PARKING_SEARCH_SECTOR_ROS_DEG,
+            left_sector_ros_deg=PARKING_LEFT_SECTOR_ROS_DEG,
+            right_sector_ros_deg=PARKING_RIGHT_SECTOR_ROS_DEG,
+            search_detect_mm=PARKING_SEARCH_DETECT_MM,
+            side_detect_mm=PARKING_SIDE_DETECT_MM,
+            detect_hold_s=PARKING_SIM_DETECT_HOLD_SECONDS,
+            straight_steer=PARKING_STRAIGHT_STEER,
+            back_steer=PARKING_LOGIC_BACK_STEER,
+            turn_steer=PARKING_LOGIC_TURN_STEER,
+            search_speed=PARKING_LOGIC_SEARCH_SPEED,
+            back_speed=PARKING_LOGIC_BACK_SPEED,
+            turn_speed=PARKING_LOGIC_TURN_SPEED,
+            follow_speed=PARKING_LOGIC_FOLLOW_SPEED,
+            back_s=PARKING_LOGIC_BACK_S,
+            turn_s=PARKING_LOGIC_TURN_S,
+            follow_max_s=PARKING_LOGIC_FOLLOW_MAX_S,
+            follow_open_loop_s=PARKING_LOGIC_FOLLOW_OPEN_LOOP_S,
+            final_back_s=PARKING_LOGIC_FINAL_BACK_S,
+            parked_pause_s=PARKING_LOGIC_PARKED_PAUSE_S,
+            exit_approach_s=PARKING_LOGIC_EXIT_APPROACH_S,
+            exit_arc_s=PARKING_LOGIC_EXIT_ARC_S,
+            exit_arc_steer=PARKING_LOGIC_EXIT_ARC_STEER,
+        )
+    )
+
+
+def build_parking_line_config() -> ParkingLineConfig:
+    return ParkingLineConfig(
+        roi_top_ratio=PARKING_LINE_ROI_TOP_RATIO,
+        white_thresh=PARKING_LINE_WHITE_THRESH,
+        hough_threshold=PARKING_LINE_HOUGH_THRESHOLD,
+        min_line_frac=PARKING_LINE_MIN_LINE_FRAC,
+        max_gap_px=PARKING_LINE_MAX_GAP_PX,
+        vertical_max_dev_deg=PARKING_LINE_VERTICAL_MAX_DEV_DEG,
+        horizontal_min_dev_deg=PARKING_LINE_HORIZONTAL_MIN_DEV_DEG,
+        horizontal_max_y_ratio=PARKING_LINE_HORIZONTAL_MAX_Y_RATIO,
+        horizontal_min_len_frac=PARKING_LINE_HORIZONTAL_MIN_LEN_FRAC,
+        merge_x_tol_px=PARKING_LINE_MERGE_X_TOL_PX,
+        merge_angle_tol_deg=PARKING_LINE_MERGE_ANGLE_TOL_DEG,
+        max_lines=PARKING_LINE_MAX_LINES,
+        extend_thickness_px=PARKING_LINE_EXTEND_THICKNESS_PX,
+        erase_thickness_px=PARKING_LINE_ERASE_THICKNESS_PX,
+    )
+
+
+def build_parking_guide_line_config() -> ParkingLineConfig:
+    # parking_sim 첫 직진 가이드용 전처리: 왼쪽 ROI + horizontal 지움 + 대시 연장.
+    # 검출 파라미터(흰색 임계 등)는 parking_logic의 PARKING_LINE_*를 공유한다.
+    return ParkingLineConfig(
+        roi_top_ratio=PARKING_GUIDE_ROI_TOP_RATIO,
+        keep_left_ratio=PARKING_GUIDE_ROI_LEFT_RATIO,
+        white_thresh=PARKING_LINE_WHITE_THRESH,
+        hough_threshold=PARKING_LINE_HOUGH_THRESHOLD,
+        min_line_frac=PARKING_LINE_MIN_LINE_FRAC,
+        max_gap_px=PARKING_LINE_MAX_GAP_PX,
+        vertical_max_dev_deg=PARKING_GUIDE_VERTICAL_MAX_DEV_DEG,
+        horizontal_min_dev_deg=PARKING_GUIDE_HORIZONTAL_MIN_DEV_DEG,
+        merge_x_tol_px=PARKING_LINE_MERGE_X_TOL_PX,
+        merge_angle_tol_deg=PARKING_LINE_MERGE_ANGLE_TOL_DEG,
+        max_lines=PARKING_LINE_MAX_LINES,
+        extend_thickness_px=PARKING_LINE_EXTEND_THICKNESS_PX,
+        erase_thickness_px=PARKING_LINE_ERASE_THICKNESS_PX,
+    )
 
 
 def build_timed_parking_mission() -> TimedParkingMission:
@@ -187,7 +350,7 @@ def build_timed_parking_mission() -> TimedParkingMission:
 
 
 # Traffic light stop gating. Stop only when red/yellow bbox area reaches this frame-area ratio.
-TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.058
+TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.05
 
 # YOLO lane model. Use a lane-trained Ultralytics .pt file, not a generic COCO model.
 YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final_openvino_model"
@@ -271,7 +434,7 @@ LOG_DIR = BASE_DIR / "Log"
 SAVE_EVERY_N_FRAMES = 5
 PRINT_EVERY_N_FRAMES = 15
 
-START_KEYS = (ord("d"), ord("D"))
+START_KEYS = (ord("t"), ord("T"))
 
 
 def parse_ratio_point(value: str) -> tuple[float, float]:
@@ -290,6 +453,22 @@ def parse_ratio_point(value: str) -> tuple[float, float]:
 
 def is_start_key(key: int) -> bool:
     return key in START_KEYS
+
+
+def _free_manual_command(free_input) -> DriveCommand:
+    """Hold-to-drive command from held W/S/A/D keys, for the --free-manual
+    waiting phase (before the mode is started with 't')."""
+    speed = (
+        MANUAL_DRIVE_POWER if free_input.held("w")
+        else -MANUAL_DRIVE_POWER if free_input.held("s")
+        else 0
+    )
+    steer = (
+        MANUAL_STEER_POWER if free_input.held("d")
+        else -MANUAL_STEER_POWER if free_input.held("a")
+        else 0
+    )
+    return DriveCommand(steer=steer, speed=speed, reason="free_manual")
 
 
 class ManualInput:
@@ -424,7 +603,7 @@ def apply_obstacle_mission_override(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="CTRL_ZERO camera/LiDAR/Arduino autonomous driving runtime.")
-    parser.add_argument("--mode", choices=("vision", "manual", "auto", "parking_sim"), default=RUN_MODE)
+    parser.add_argument("--mode", choices=("vision", "manual", "auto", "parking_sim", "parking_logic"), default=RUN_MODE)
     parser.add_argument("--backend", choices=("yolo",), default=LANE_BACKEND)
     parser.add_argument("--yolo-model", type=Path, default=YOLO_MODEL_PATH)
     parser.add_argument("--yolo-frame-skip", type=int, default=YOLO_FRAME_SKIP)
@@ -472,6 +651,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-display", action="store_true")
     parser.add_argument("--capture-frame", action="store_true",
                         help="manual mode: press 'c' to start/stop 30 fps frame capture to captures/")
+    parser.add_argument("--free-manual", action="store_true",
+                        help="any mode: hold-to-drive (W/S/A/D) until you press 't' to start the mode")
+    parser.add_argument("--rear-camera-index", type=int, default=PARKING_LOGIC_REAR_CAMERA_INDEX,
+                        help="parking_logic: rear camera index (default from PARKING_LOGIC_REAR_CAMERA_INDEX)")
+    parser.add_argument("--best-model", action="store_true",
+                        help="parking_logic: use the slot model's bbox to build an infinite-lane "
+                             "frame for the lane model (keypoints are not used)")
     parser.add_argument("--log", action="store_true")
     parser.add_argument("--no-log", action="store_true")
     return parser
@@ -549,10 +735,16 @@ def main() -> None:
     if motor_enabled and arduino_port in (None, "", "auto"):
         arduino_port = "auto"
 
-    # parking_sim is LiDAR-only: skip the camera + YOLO entirely (no frame grab,
-    # no model load, no display) so it runs light and needs no camera plugged in.
+    # parking_sim is LiDAR-driven and skips YOLO.  It still opens the camera when
+    # the heading guide is on (to steer straight off the left-half ROI); with the
+    # guide off it is fully camera-less.
     parking_sim = args.mode == "parking_sim"
-    camera = None if parking_sim else CameraReader(
+    parking_logic = args.mode == "parking_logic"
+    parking_sim_guide = parking_sim and PARKING_SIM_USE_CAMERA_GUIDE
+    # ``camera`` is the FRONT camera everywhere (parking_logic uses it for the
+    # SEARCH vanishing-point guide); parking_logic additionally opens the REAR
+    # camera for the line-follow reverse.
+    camera = None if (parking_sim and not parking_sim_guide) else CameraReader(
         CameraConfig(
             index=args.camera_index,
             backend=args.camera_backend,
@@ -561,6 +753,15 @@ def main() -> None:
             fps=args.camera_fps,
         )
     )
+    rear_camera = CameraReader(
+        CameraConfig(
+            index=args.rear_camera_index,
+            backend=args.camera_backend,
+            width=args.camera_width,
+            height=args.camera_height,
+            fps=args.camera_fps,
+        )
+    ) if parking_logic else None
     motor = ArduinoMotorController(
         ArduinoConfig(port=arduino_port, baudrate=ARDUINO_BAUDRATE, drive_max_pwm=DRIVE_MAX_PWM),
         dry_run=not motor_enabled,
@@ -582,7 +783,11 @@ def main() -> None:
         )
     )
 
-    lane_detector = None if (parking_sim or args.mode == "manual") else build_lane_detector(args)
+    # parking_sim's guide steers on the vanishing point of the two fitted lines —
+    # no model inference — so parking_sim never needs YOLO loaded.
+    lane_detector = (
+        None if (parking_sim or args.mode == "manual") else build_lane_detector(args)
+    )
     lidar_config = LidarConfig(
         port=LIDAR_PORT,
         front_min_ros_deg=OBSTACLE_LIDAR_MIN_ROS_DEG,
@@ -614,6 +819,7 @@ def main() -> None:
         )
     )
     parking_sim_mission = build_timed_parking_mission()
+    parking_logic_mission = build_parking_logic_mission()
     logger = DriveLogger(
         LogConfig(
             enabled=(LOG_ENABLED or args.log) and not args.no_log,
@@ -631,16 +837,27 @@ def main() -> None:
     drive_started = not motor_enabled
     prev_obstacle_detected = False
 
+    # --free-manual: hold-to-drive (W/S/A/D) while waiting, until 't' starts the
+    # mode. (manual mode is already hold-to-drive, so it needs no extra listener.)
+    free_input = None
+    if args.free_manual and args.mode != "manual":
+        free_input = ManualInput()
+        free_input.start()
+
     try:
         motor.open()
         if camera is not None:
             camera.open()
+        if rear_camera is not None:
+            rear_camera.open()
         if lidar is not None:
             lidar.open()
         logger.open()
 
-        print("Keys: q quit, d start/resume, space stop + manual, +/- max speed, l toggle log.")
+        print("Keys: q quit, t start/resume, space stop + manual, +/- max speed, l toggle log.")
         print("Manual driving (space or --mode manual): w/s speed, a/d steer pulse, c center steer.")
+        if free_input is not None:
+            print("--free-manual: hold W/S/A/D to drive now; press 't' to start the mode.")
         print(f"Runtime: mode={args.mode}, backend={args.backend}, motor={'on' if motor_enabled else 'dry'}")
         if args.mode == "parking_sim":
             print(
@@ -654,13 +871,22 @@ def main() -> None:
             if lidar is None:
                 print("WARNING: USE_LIDAR is False; parking_sim has no sensor input and cannot work.")
         if motor_enabled:
-            print("Drive is waiting. Press d/D to start motor output.")
+            print("Drive is waiting. Press t/T to start motor output.")
 
         if parking_sim:
-            # LiDAR-only loop: no camera, no YOLO, no display. Keys via console
-            # (q quit, d/D start, space stop).
+            # LiDAR-driven parking.  During the first straight (SEARCH/APPROACH)
+            # an optional camera guide steers: the left ROI is kept (rest blacked),
+            # horizontal white paint is ERASED, broken dashes are extended, and the
+            # UNCHANGED YOLO lane model runs on that frame; its driving-area
+            # heading/offset produce the steer.  Other phases use mission steering.
+            guide_line_cfg = build_parking_guide_line_config()
             while True:
                 frame_count += 1
+                frame = None
+                if camera is not None:
+                    ret, frame = camera.read()
+                    if not ret:
+                        frame = None
                 if lidar is not None and frame_count % max(LIDAR_POLL_EVERY_N_FRAMES, 1) == 0:
                     try:
                         last_lidar_scan = lidar.read_scan()
@@ -670,8 +896,45 @@ def main() -> None:
                 if drive_started:
                     parking_command = parking_sim_mission.step(last_lidar_scan)
                     command = parking_command or DriveCommand(steer=0, speed=0, reason="parking_sim_idle")
+                elif free_input is not None:
+                    command = _free_manual_command(free_input)
                 else:
                     command = DriveCommand(steer=0, speed=0, reason="waiting_for_start")
+
+                # Guide pipeline runs every frame for inspection (prep + model);
+                # its steer is APPLIED only while driving the initial straight.
+                guide_vis = frame
+                guide_active = (
+                    drive_started and parking_sim_mission.in_initial_straight
+                )
+                guide_steer = None
+                vp_err = None
+                if frame is not None:
+                    model_frame, guide_vis, n_dashes, guide_lines, _hy = prepare_parking_line_frame(
+                        frame, guide_line_cfg
+                    )
+                    # Vanishing-point hold: parallel to the two lines <=> their
+                    # image intersection sits at the frame centre x.  Position-
+                    # independent, so no reference calibration is needed.
+                    vp = vanishing_point(guide_lines)
+                    cx = frame.shape[1] / 2.0
+                    if vp is not None:
+                        vp_err = (vp[0] - cx) / cx
+                        guide_steer = int(
+                            clamp(PARKING_GUIDE_VP_GAIN * vp_err,
+                                  -PARKING_GUIDE_STEER_LIMIT, PARKING_GUIDE_STEER_LIMIT)
+                        )
+                        cv2.line(guide_vis, (int(cx), 0), (int(cx), 40), (200, 200, 200), 1)
+                        vx = int(clamp(vp[0], 0, frame.shape[1] - 1))
+                        cv2.circle(guide_vis, (vx, max(0, min(int(vp[1]), 40))), 6, (0, 255, 255), -1)
+                    if guide_active and guide_steer is not None and command.speed != 0:
+                        command = DriveCommand(
+                            steer=guide_steer, speed=command.speed,
+                            reason=command.reason + "+guide",
+                        )
+                    if display_enabled:
+                        cv2.imshow("parking_guide model input", model_frame)
+
                 motor.send(command.steer, command.speed if motor_enabled else 0)
                 if frame_count % PRINT_EVERY_N_FRAMES == 0:
                     print(
@@ -679,17 +942,232 @@ def main() -> None:
                         f"speed={command.speed:+d} reason={command.reason}",
                         flush=True,
                     )
+
                 key = read_console_key()
+                if display_enabled and guide_vis is not None:
+                    applied = "+guide" in command.reason
+                    hud = (
+                        f"phase={parking_sim_mission.state.name}  "
+                        f"vp_err={'--' if vp_err is None else f'{vp_err:+.3f}'}  "
+                        f"guide={'--' if guide_steer is None else f'{guide_steer:+d}'}  "
+                        f"applied={command.steer:+d} spd={command.speed:+d}  "
+                        f"{'GUIDE->STEER' if applied else ('guide idle' if guide_active else 'guide off')}"
+                    )
+                    y = guide_vis.shape[0] - 44
+                    cv2.putText(guide_vis, hud, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+                    cv2.putText(guide_vis, hud, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                (0, 255, 0) if applied else (255, 255, 0), 1, cv2.LINE_AA)
+                    cv2.imshow("parking_guide", guide_vis)
+                    k2 = cv2.waitKey(1) & 0xFF
+                    if key == -1:
+                        key = k2
                 if key == ord("q"):
                     break
                 if key == ord(" "):
                     drive_started = False
                     motor.stop()
-                    print("Stopped. Press d/D to restart.")
+                    print("Stopped. Press t/T to restart.")
                 elif motor_enabled and not drive_started and is_start_key(key):
                     drive_started = True
                     print("Drive started.")
-                time.sleep(0.02)
+                if camera is None:
+                    time.sleep(0.02)
+            return
+
+        if parking_logic:
+            # Rear-camera parking: FSM drives the timed phases; during LINE_FOLLOW
+            # the broken parking-lines are extended and fed to the (unchanged)
+            # YOLO lane model, whose heading/offset then steers the reverse.
+            line_cfg = build_parking_line_config()
+            guide_line_cfg = build_parking_guide_line_config()
+            slot_detector = None
+            if args.best_model:
+                print("--best-model: slot bbox -> infinite-lane frame -> lane model "
+                      f"({PARKING_LOGIC_BEST_MODEL_PATH})")
+                slot_detector = ParkingSlotDetector(
+                    PARKING_LOGIC_BEST_MODEL_PATH,
+                    device=YOLO_DEVICE,
+                    image_size=args.yolo_imgsz,
+                    confidence=PARKING_LOGIC_BEST_CONF,
+                    iou=args.yolo_iou,
+                )
+            print(
+                "Parking_logic: first car -> back "
+                f"{PARKING_LOGIC_BACK_S}s -> full-left {PARKING_LOGIC_TURN_S}s -> "
+                "rear-cam line-follow reverse."
+            )
+            while True:
+                frame_count += 1
+                front_frame = None
+                rear_frame = None
+                if camera is not None:
+                    ret, front_frame = camera.read()
+                    if not ret:
+                        front_frame = None
+                if rear_camera is not None:
+                    ret_r, rear_frame = rear_camera.read()
+                    if not ret_r:
+                        rear_frame = None
+                if lidar is not None and frame_count % max(LIDAR_POLL_EVERY_N_FRAMES, 1) == 0:
+                    try:
+                        last_lidar_scan = lidar.read_scan()
+                    except Exception as exc:  # pragma: no cover - hardware dependent
+                        print(f"LiDAR read failed: {exc}")
+                        last_lidar_scan = None
+
+                if drive_started:
+                    parking_command = parking_logic_mission.step(last_lidar_scan)
+                    command = parking_command or DriveCommand(steer=0, speed=0, reason="parking_logic_idle")
+                elif free_input is not None:
+                    command = _free_manual_command(free_input)
+                else:
+                    command = DriveCommand(steer=0, speed=0, reason="waiting_for_start")
+
+                # SEARCH: FRONT camera vanishing-point guide holds the heading
+                # straight (same invariant as parking_sim; no model inference).
+                if front_frame is not None and (
+                    parking_logic_mission.in_initial_straight or not drive_started
+                ):
+                    _gm, guide_vis, _gd, guide_lines, _hy = prepare_parking_line_frame(
+                        front_frame, guide_line_cfg
+                    )
+                    vp = vanishing_point(guide_lines)
+                    cx = front_frame.shape[1] / 2.0
+                    guide_steer = None
+                    vp_err = None
+                    if vp is not None:
+                        vp_err = (vp[0] - cx) / cx
+                        guide_steer = int(
+                            clamp(PARKING_LOGIC_GUIDE_VP_GAIN * vp_err,
+                                  -PARKING_LOGIC_GUIDE_STEER_LIMIT,
+                                  PARKING_LOGIC_GUIDE_STEER_LIMIT)
+                        )
+                        cv2.line(guide_vis, (int(cx), 0), (int(cx), 40), (200, 200, 200), 1)
+                        vx = int(clamp(vp[0], 0, front_frame.shape[1] - 1))
+                        cv2.circle(guide_vis, (vx, max(0, min(int(vp[1]), 40))), 6, (0, 255, 255), -1)
+                    if (
+                        drive_started
+                        and parking_logic_mission.in_initial_straight
+                        and guide_steer is not None
+                        and command.speed != 0
+                    ):
+                        command = DriveCommand(
+                            steer=guide_steer, speed=command.speed,
+                            reason=command.reason + "+guide",
+                        )
+                    if display_enabled:
+                        applied = "+guide" in command.reason
+                        hud = (
+                            f"phase={parking_logic_mission.state.name}  "
+                            f"vp_err={'--' if vp_err is None else f'{vp_err:+.3f}'}  "
+                            f"guide={'--' if guide_steer is None else f'{guide_steer:+d}'}  "
+                            f"applied={command.steer:+d} spd={command.speed:+d}  "
+                            f"{'GUIDE->STEER' if applied else 'guide idle'}"
+                        )
+                        y = guide_vis.shape[0] - 12
+                        cv2.putText(guide_vis, hud, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3, cv2.LINE_AA)
+                        cv2.putText(guide_vis, hud, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                    (0, 255, 0) if applied else (255, 255, 0), 1, cv2.LINE_AA)
+                        cv2.imshow("parking_logic guide", guide_vis)
+
+                # LINE_FOLLOW: REAR camera bay lines -> model -> reverse steering.
+                # Skipped during LINE_FOLLOW's open-loop opening (plain straight
+                # reverse) — no slot model, no lane model, no Hough.
+                line_vis = rear_frame
+                if (
+                    rear_frame is not None
+                    and drive_started
+                    and parking_logic_mission.line_follow_camera_active
+                ):
+                    # The slot model supplies the bbox (where to look); the bay's
+                    # side lines are repainted spanning the whole frame — a lane
+                    # that never ends — so the fit stays well conditioned even
+                    # when the bay-end line covers the drivable area.  Without
+                    # --best-model the same preparation runs over the full frame.
+                    bbox = None
+                    if slot_detector is not None:
+                        det = best_slot(slot_detector.detect(rear_frame), rear_frame.shape[1])
+                        bbox = det.bbox if det is not None else None
+                    model_frame, line_vis, n_dashes, h_far_y = prepare_infinite_lane_frame(
+                        rear_frame, bbox, line_cfg
+                    )
+                    if bbox is not None:
+                        bx1, by1, bx2, by2 = (int(v) for v in bbox)
+                        cv2.rectangle(line_vis, (bx1, by1), (bx2, by2), (255, 200, 0), 2)
+                    lane = lane_detector.detect(model_frame)
+                    heading = lane.heading_deg if lane.heading_deg is not None else 0.0
+                    offset = lane.offset_norm if lane.offset_norm is not None else 0.0
+                    line_conf = lane.confidence
+                    line_ok = n_dashes > 0 and lane.confidence > 0.0
+                    raw_steer = PARKING_LOGIC_REVERSE_STEER_SIGN * (
+                        PARKING_LOGIC_HEADING_GAIN * heading
+                        + PARKING_LOGIC_OFFSET_GAIN * offset
+                    )
+                    line_steer = int(clamp(raw_steer, -PARKING_LOGIC_STEER_LIMIT, PARKING_LOGIC_STEER_LIMIT))
+
+                    # Bay-end trigger: the white horizontal line has risen past the
+                    # far_y threshold -> end camera steering before the lines leave
+                    # the view and the model heading turns to noise.  The mission
+                    # then backs straight for final_back_s, pauses, and exits.
+                    bay_end = (
+                        h_far_y is not None and h_far_y >= PARKING_LOGIC_STOP_FAR_Y_RATIO
+                    )
+                    if bay_end and parking_logic_mission.stop_line_follow():
+                        print(f"[parking_logic] bay-end line far_y={h_far_y:.2f} "
+                              f"-> final back {PARKING_LOGIC_FINAL_BACK_S}s", flush=True)
+                    elif (
+                        drive_started
+                        and parking_logic_mission.in_line_follow
+                        and line_ok
+                        and command.speed != 0
+                    ):
+                        command = DriveCommand(
+                            steer=line_steer, speed=command.speed,
+                            reason=command.reason + "+line",
+                        )
+                    if display_enabled and line_vis is not None:
+                        applied = "+line" in command.reason
+                        hud = (
+                            f"phase={parking_logic_mission.state.name}  "
+                            f"lanes={n_dashes} "
+                            f"conf={line_conf:.2f} head={heading:+.1f} off={offset:+.2f} "
+                            f"hFarY={'--' if h_far_y is None else f'{h_far_y:.2f}'}/{PARKING_LOGIC_STOP_FAR_Y_RATIO:.2f} "
+                            f"line_steer={line_steer:+d} | applied={command.steer:+d} spd={command.speed:+d} "
+                            f"{'LINE->STEER' if applied else 'line idle'}"
+                        )
+                        y = line_vis.shape[0] - 12
+                        cv2.putText(line_vis, hud, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3, cv2.LINE_AA)
+                        cv2.putText(line_vis, hud, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                    (0, 255, 0) if applied else (255, 255, 0), 1, cv2.LINE_AA)
+                        cv2.imshow("parking_logic", line_vis)
+                        cv2.imshow("parking_logic model input", model_frame)
+                        # What the LANE model made of the frame.
+                        cv2.imshow("parking_logic lane result", lane.annotated)
+
+                motor.send(command.steer, command.speed if motor_enabled else 0)
+                if frame_count % PRINT_EVERY_N_FRAMES == 0:
+                    print(
+                        f"frame={frame_count} steer={command.steer:+d} "
+                        f"speed={command.speed:+d} reason={command.reason}",
+                        flush=True,
+                    )
+
+                key = read_console_key()
+                if display_enabled:
+                    k2 = cv2.waitKey(1) & 0xFF
+                    if key == -1:
+                        key = k2
+                if key == ord("q"):
+                    break
+                if key == ord(" "):
+                    drive_started = False
+                    motor.stop()
+                    print("Stopped. Press t/T to restart.")
+                elif motor_enabled and not drive_started and is_start_key(key):
+                    drive_started = True
+                    print("Drive started.")
+                if camera is None:
+                    time.sleep(0.02)
             return
 
         if args.mode == "manual":
@@ -815,6 +1293,8 @@ def main() -> None:
                             cruise_speed=controller.config.max_speed,
                         )
                     command = apply_obstacle_mission_override(base_command, mission_command, safety)
+            elif free_input is not None:
+                command = _free_manual_command(free_input)
             else:
                 command = DriveCommand(steer=0, speed=0, reason="waiting_for_start")
             motor.send(command.steer, command.speed if motor_enabled else 0)
@@ -901,9 +1381,13 @@ def main() -> None:
                     manual_steer = 0
                     manual_steer_until = 0.0
     finally:
+        if free_input is not None:
+            free_input.stop()
         motor.close()
         if camera is not None:
             camera.release()
+        if rear_camera is not None:
+            rear_camera.release()
         if lidar is not None:
             lidar.close()
         logger.close()

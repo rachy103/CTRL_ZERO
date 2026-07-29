@@ -132,6 +132,13 @@ class TimedParkingMission:
     def done(self) -> bool:
         return self.state in (TimedParkingState.DONE, TimedParkingState.ABORTED)
 
+    @property
+    def in_initial_straight(self) -> bool:
+        # SEARCH only: the camera guide steers while searching for the first car.
+        # APPROACH runs open-loop (guide excluded) so the timed dead-reckoning
+        # segment is not perturbed right before the swing.
+        return self.state == TimedParkingState.SEARCH
+
     def step(
         self, scan: np.ndarray | None, now_s: float | None = None
     ) -> DriveCommand | None:
