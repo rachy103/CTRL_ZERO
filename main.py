@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -217,6 +218,13 @@ PARKING_LOGIC_GUIDE_STEER_LIMIT = 60
 # 이 값 이상이면 정지한다. 라이다 측면 감지만으로는 차선이 시야에서 사라진 뒤
 # 헤딩 제어가 망가지므로, 이쪽이 더 직접적인 신호다.
 PARKING_LOGIC_STOP_FAR_Y_RATIO = 0.8
+# 정지 로직 단계적 무장(arming). 후진 초반에는 프레임 아래쪽에 걸리는 엉뚱한 흰 선
+# 때문에 far_y가 즉시 올라가 정지해 버린다. 그래서 오픈루프가 끝난 뒤 처음
+# 이 횟수만큼의 "실제로 파이프라인이 돈 프레임" 동안은 far_y 컷과 정지 임계를
+# 0으로 두어 정지 로직을 끄고, 그 뒤 계단식으로 원래 값(0.9/0.8)에 복귀한다.
+# 벽시계가 아니라 프레임 수 기준이라 첫 프레임의 모델 로딩 멈춤(수 초)에도
+# 예산이 소모되지 않는다. ~10fps 기준 35프레임 ≈ 3.5초.
+PARKING_LOGIC_STOP_ARM_FRAMES = 35
 
 # --best-model: 슬롯 모델(bbox)로 탐색 범위를 잡고, 세로선을 프레임 전체로 연장한
 # 합성 프레임을 기존 차선 모델에 입력해 후진을 제어한다. keypoint는 쓰지 않는다.
@@ -822,6 +830,9 @@ def main() -> None:
     )
     parking_sim_mission = build_timed_parking_mission()
     parking_logic_mission = build_parking_logic_mission()
+    # Closed-loop LINE_FOLLOW pipeline frames so far; drives the staged stop
+    # arming (counted per processed frame, immune to model-loading stalls).
+    line_follow_ctrl_frames = 0
     logger = DriveLogger(
         LogConfig(
             enabled=(LOG_ENABLED or args.log) and not args.no_log,
@@ -1075,6 +1086,8 @@ def main() -> None:
                 # LINE_FOLLOW: REAR camera bay lines -> model -> reverse steering.
                 # Skipped during LINE_FOLLOW's open-loop opening (plain straight
                 # reverse) — no slot model, no lane model, no Hough.
+                if not parking_logic_mission.in_line_follow:
+                    line_follow_ctrl_frames = 0  # fresh arming on every (re)entry
                 line_vis = rear_frame
                 if (
                     rear_frame is not None
@@ -1090,8 +1103,21 @@ def main() -> None:
                     if slot_detector is not None:
                         det = best_slot(slot_detector.detect(rear_frame), rear_frame.shape[1])
                         bbox = det.bbox if det is not None else None
+
+                    # Staged arming of the stop, counted in PIPELINE FRAMES, not
+                    # wall time: model loading blocks the first frame for seconds
+                    # while the car sits still (Arduino failsafe), and a wall-clock
+                    # timer would burn its whole budget during that stall.  A frame
+                    # counter only advances when the pipeline actually ran, so the
+                    # car really gets STOP_ARM_FRAMES frames of disarmed reversing.
+                    line_follow_ctrl_frames += 1
+                    stop_armed = line_follow_ctrl_frames > PARKING_LOGIC_STOP_ARM_FRAMES
+                    far_y_cap = PARKING_LINE_HORIZONTAL_MAX_Y_RATIO if stop_armed else 0.0
+                    stop_ratio = PARKING_LOGIC_STOP_FAR_Y_RATIO if stop_armed else 0.0
+                    frame_cfg = replace(line_cfg, horizontal_max_y_ratio=far_y_cap)
+
                     model_frame, line_vis, n_dashes, h_far_y = prepare_infinite_lane_frame(
-                        rear_frame, bbox, line_cfg
+                        rear_frame, bbox, frame_cfg
                     )
                     if bbox is not None:
                         bx1, by1, bx2, by2 = (int(v) for v in bbox)
@@ -1112,7 +1138,9 @@ def main() -> None:
                     # the view and the model heading turns to noise.  The mission
                     # then backs straight for final_back_s, pauses, and exits.
                     bay_end = (
-                        h_far_y is not None and h_far_y >= PARKING_LOGIC_STOP_FAR_Y_RATIO
+                        stop_armed
+                        and h_far_y is not None
+                        and h_far_y >= stop_ratio
                     )
                     if bay_end and parking_logic_mission.stop_line_follow():
                         print(f"[parking_logic] bay-end line far_y={h_far_y:.2f} "
@@ -1133,7 +1161,8 @@ def main() -> None:
                             f"phase={parking_logic_mission.state.name}  "
                             f"lanes={n_dashes} "
                             f"conf={line_conf:.2f} head={heading:+.1f} off={offset:+.2f} "
-                            f"hFarY={'--' if h_far_y is None else f'{h_far_y:.2f}'}/{PARKING_LOGIC_STOP_FAR_Y_RATIO:.2f} "
+                            f"hFarY={'--' if h_far_y is None else f'{h_far_y:.2f}'}/{stop_ratio:.2f} "
+                            f"{'ARMED' if stop_armed else f'stop off {line_follow_ctrl_frames}/{PARKING_LOGIC_STOP_ARM_FRAMES}f'} "
                             f"line_steer={line_steer:+d} | applied={command.steer:+d} spd={command.speed:+d} "
                             f"{'LINE->STEER' if applied else 'line idle'}"
                         )
