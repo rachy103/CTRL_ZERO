@@ -92,6 +92,7 @@ def build_real_drive_controller():
             contest_position_weight=real_main.CONTEST_POSITION_WEIGHT,
             contest_angle_norm_deg=real_main.CONTEST_STEERING_ANGLE_NORM_DEG,
             contest_steer_limit=real_main.CONTEST_STEER_LIMIT,
+            contest_center_offset_norm=real_main.CONTEST_CENTER_OFFSET_NORM,
             min_confidence=real_main.MIN_LANE_CONFIDENCE_TO_DRIVE,
             max_steer=real_main.MAX_STEER,
             reverse_steer=real_main.REVERSE_STEER,
@@ -356,13 +357,14 @@ class AutoLaneControl:
             ContestObstacleMissionConfig,
         )
         from ctrl_zero.safety import build_safety_decision
-        from ctrl_zero.traffic_light import traffic_light_object
+        from ctrl_zero.traffic_light import TrafficLightLatch, traffic_light_object
 
         _validate_auto_camera_config(config)
         self.cv2 = cv2
         self.real_main = real_main
         self.build_safety_decision = build_safety_decision
         self.traffic_light_object = traffic_light_object
+        self.traffic_latch = TrafficLightLatch()
         self.controller = controller
         self.width = int(get_value(config, "hardware.camera.width_px"))
         self.height = int(get_value(config, "hardware.camera.height_px"))
@@ -449,7 +451,7 @@ class AutoLaneControl:
         frame_area = float(max(frame.shape[0] * frame.shape[1], 1))
         safety = self.build_safety_decision(
             lidar=None,
-            traffic_light_state=lane.traffic_light_state,
+            traffic_light_state=self.traffic_latch.update(lane.traffic_light_state),
             traffic_light_object=traffic_object,
             traffic_light_frame_area=frame_area,
             traffic_light_min_stop_area_ratio=self.real_main.TRAFFIC_LIGHT_STOP_AREA_RATIO,

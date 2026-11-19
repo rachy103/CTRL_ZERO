@@ -14,7 +14,7 @@ from ctrl_zero.common import clamp
 from ctrl_zero.control import DriveCommand, DriveConfig, DriveController
 from ctrl_zero.lidar import LidarConfig, LidarReader, ObstacleDecision, analyze_obstacles
 from ctrl_zero.logger import DriveLogger, LogConfig
-from ctrl_zero.obstacles import ContestObstacleMission, ContestObstacleMissionConfig
+from ctrl_zero.obstacles import ContestObstacleMission, ContestObstacleMissionConfig, lock_lane_detection
 from ctrl_zero.parking_logic import ParkingLogicConfig, ParkingLogicMission
 from ctrl_zero.parking_timed import TimedParkingConfig, TimedParkingMission
 from ctrl_zero.vision.parking_line import (
@@ -25,7 +25,7 @@ from ctrl_zero.vision.parking_line import (
 )
 from ctrl_zero.vision.parking_slot import ParkingSlotDetector, best_slot
 from ctrl_zero.safety import SafetyDecision, build_safety_decision
-from ctrl_zero.traffic_light import traffic_light_object
+from ctrl_zero.traffic_light import TrafficLightLatch, traffic_light_meets_stop_width, traffic_light_object
 from ctrl_zero.ui import draw_status
 from ctrl_zero.vision.preprocess import BirdEyeConfig, LanePreprocessor, ROICropConfig
 
@@ -42,7 +42,7 @@ RUN_MODE = "auto"
 LANE_BACKEND = "yolo"
 
 # Camera
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 CAMERA_BACKEND = "dshow"  # Windows: "dshow" 권장. 필요 시 "msmf" 또는 "any".
 CAMERA_WIDTH = 0
 CAMERA_HEIGHT = 0
@@ -50,12 +50,12 @@ CAMERA_FPS = 0
 
 # Arduino / motor
 USE_ARDUINO = True
-ARDUINO_PORT = "COM3"
+ARDUINO_PORT = "COM5"
 ARDUINO_BAUDRATE = 115200
 DRIVE_MAX_PWM = 255
 
 # LiDAR
-USE_LIDAR = True
+USE_LIDAR = False
 LIDAR_PORT = "COM4"
 LIDAR_POLL_EVERY_N_FRAMES = 1
 LIDAR_STOP_DISTANCE_MM = 450.0
@@ -78,13 +78,23 @@ OBSTACLE_TRIGGER_FRAMES = 2
 #            far_y= value to tune it to your camera geometry.
 OBSTACLE_CAMERA_TRIGGER_FAR_Y_RATIO = 0.0
 
-OBSTACLE_LANE2_SHIFT_STEER = -100
-OBSTACLE_LANE1_SHIFT_STEER = 100
+OBSTACLE_LANE2_SHIFT_STEER = -60
+OBSTACLE_LANE1_SHIFT_STEER = 60
 OBSTACLE_SHIFT_OUT_SECONDS = 1.5
 # Extra shift-out time per unit of steering at detection (seconds per steer unit).
 # duration = OBSTACLE_SHIFT_OUT_SECONDS + |steer_at_detection| * this. 0 disables.
-OBSTACLE_SHIFT_OUT_STEER_WEIGHT = 0.003
-OBSTACLE_RETRIGGER_COOLDOWN_SECONDS = 0.0
+OBSTACLE_SHIFT_OUT_STEER_WEIGHT = 0.000
+OBSTACLE_RETRIGGER_COOLDOWN_SECONDS = 3.5
+# obstacle_automatic: True -> end the shift-out when the target lane's look-ahead
+# point is centred (S-curve safe), then lock lane following onto that lane.
+# False -> the original timed shift-out above.
+OBSTACLE_AUTOMATIC = True
+OBSTACLE_AUTO_LOOKAHEAD_RATIO = 0.30      # 0 = near point, 1 = far point
+OBSTACLE_AUTO_CENTER_TOLERANCE = 0.2     # |x_err| / frame_centre_x
+OBSTACLE_AUTO_SETTLE_FRAMES = 2
+OBSTACLE_AUTO_MIN_SHIFT_SECONDS = 0.30
+OBSTACLE_AUTO_MAX_SHIFT_SECONDS = 2.50
+OBSTACLE_AUTO_LANE_LOCK_SECONDS = 1.50
 # Single source of truth for the front LiDAR sector, in ROS angles (forward=0,
 # left=+, right=-).  Drives BOTH the obstacle-avoidance trigger AND the UI/log
 # nearest-range display, so the number on screen always matches the wedge the
@@ -224,7 +234,7 @@ PARKING_LOGIC_STOP_FAR_Y_RATIO = 0.8
 # 0으로 두어 정지 로직을 끄고, 그 뒤 계단식으로 원래 값(0.9/0.8)에 복귀한다.
 # 벽시계가 아니라 프레임 수 기준이라 첫 프레임의 모델 로딩 멈춤(수 초)에도
 # 예산이 소모되지 않는다. ~10fps 기준 35프레임 ≈ 3.5초.
-PARKING_LOGIC_STOP_ARM_FRAMES = 35
+PARKING_LOGIC_STOP_ARM_FRAMES = 25
 
 # --best-model: 슬롯 모델(bbox)로 탐색 범위를 잡고, 세로선을 프레임 전체로 연장한
 # 합성 프레임을 기존 차선 모델에 입력해 후진을 제어한다. keypoint는 쓰지 않는다.
@@ -359,8 +369,13 @@ def build_timed_parking_mission() -> TimedParkingMission:
     )
 
 
-# Traffic light stop gating. Stop only when red/yellow bbox area reaches this frame-area ratio.
-TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.05
+# Traffic light stop gating. 0.0 = stop on ANY red regardless of bbox size.
+# Red latches the stop (TrafficLightLatch); only a visible green releases it.
+TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.0
+# A red light only latches the stop once its bbox width reaches this fraction of
+# the frame width (0.70 = 70%).  Prevents stopping on a light that is only
+# partly in view.  0.0 disables.  Green always releases regardless of size.
+TRAFFIC_LIGHT_STOP_WIDTH_RATIO = 0.2
 
 # YOLO lane model. Use a lane-trained Ultralytics .pt file, not a generic COCO model.
 YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final_openvino_model"
@@ -415,9 +430,12 @@ MIN_SPEED = 230
 MAX_SPEED = 255
 MIN_LANE_CONFIDENCE_TO_DRIVE = 0.45
 CONTEST_ANGLE_WEIGHT = 0.4
-CONTEST_POSITION_WEIGHT = 0.10
+CONTEST_POSITION_WEIGHT = 0.05
 CONTEST_STEERING_ANGLE_NORM_DEG = 50.0
 CONTEST_STEER_LIMIT = 10.0
+# 차를 직선 차선 정중앙에 똑바로 세웠을 때 HUD에 나오는 offset= 값을 그대로 넣는다.
+# 0.0 = 보정 없음. 이 값만큼을 '중앙'으로 보고 주행한다.
+CONTEST_CENTER_OFFSET_NORM = 0.005
 
 # Common steering limits & safety
 MAX_STEER = 100
@@ -785,6 +803,7 @@ def main() -> None:
             contest_position_weight=CONTEST_POSITION_WEIGHT,
             contest_angle_norm_deg=CONTEST_STEERING_ANGLE_NORM_DEG,
             contest_steer_limit=CONTEST_STEER_LIMIT,
+            contest_center_offset_norm=CONTEST_CENTER_OFFSET_NORM,
             min_confidence=MIN_LANE_CONFIDENCE_TO_DRIVE,
             max_steer=MAX_STEER,
             reverse_steer=REVERSE_STEER,
@@ -826,6 +845,13 @@ def main() -> None:
             retrigger_cooldown_s=OBSTACLE_RETRIGGER_COOLDOWN_SECONDS,
             lidar_min_ros_deg=OBSTACLE_LIDAR_MIN_ROS_DEG,
             lidar_max_ros_deg=OBSTACLE_LIDAR_MAX_ROS_DEG,
+            automatic=OBSTACLE_AUTOMATIC,
+            auto_lookahead_ratio=OBSTACLE_AUTO_LOOKAHEAD_RATIO,
+            auto_center_tolerance_norm=OBSTACLE_AUTO_CENTER_TOLERANCE,
+            auto_settle_frames=OBSTACLE_AUTO_SETTLE_FRAMES,
+            auto_min_shift_s=OBSTACLE_AUTO_MIN_SHIFT_SECONDS,
+            auto_max_shift_s=OBSTACLE_AUTO_MAX_SHIFT_SECONDS,
+            auto_lane_lock_s=OBSTACLE_AUTO_LANE_LOCK_SECONDS,
         )
     )
     parking_sim_mission = build_timed_parking_mission()
@@ -849,6 +875,7 @@ def main() -> None:
     last_time = time.perf_counter()
     drive_started = not motor_enabled
     prev_obstacle_detected = False
+    traffic_latch = TrafficLightLatch()
 
     # --free-manual: hold-to-drive (W/S/A/D) while waiting, until 't' starts the
     # mode. (manual mode is already hold-to-drive, so it needs no extra listener.)
@@ -1289,9 +1316,16 @@ def main() -> None:
             lane_for_control = lane
             traffic_obj = traffic_light_object(lane_for_control.objects)
             frame_area = float(max(lane_for_control.annotated.shape[0] * lane_for_control.annotated.shape[1], 1))
+            raw_traffic_state = lane_for_control.traffic_light_state
+            if (raw_traffic_state or "").lower().strip() == "red" and not traffic_light_meets_stop_width(
+                traffic_obj, lane_for_control.annotated.shape[1], TRAFFIC_LIGHT_STOP_WIDTH_RATIO
+            ):
+                # Red seen but the light is still too narrow (partly in view):
+                # don't latch the stop yet.
+                raw_traffic_state = "unknown"
             safety = build_safety_decision(
                 lidar=last_obstacle,
-                traffic_light_state=lane_for_control.traffic_light_state,
+                traffic_light_state=traffic_latch.update(raw_traffic_state),
                 traffic_light_object=traffic_obj,
                 traffic_light_frame_area=frame_area,
                 traffic_light_min_stop_area_ratio=TRAFFIC_LIGHT_STOP_AREA_RATIO,
@@ -1303,6 +1337,9 @@ def main() -> None:
                     parking_command = parking_sim_mission.step(last_lidar_scan)
                     command = parking_command or DriveCommand(steer=0, speed=0, reason="parking_sim_idle")
                 else:
+                    if args.mode == "auto":
+                        # obstacle_automatic: follow the lane we avoided into.
+                        lane_for_control = lock_lane_detection(lane_for_control, obstacle_mission.locked_lane_label())
                     base_command = controller.compute(
                         lane_for_control,
                         safety,
@@ -1322,7 +1359,21 @@ def main() -> None:
                             offset_norm=lane.offset_norm,
                             lane_follow_steer=base_command.steer,
                             cruise_speed=controller.config.max_speed,
+                            hold=safety.reason == "traffic_light_stop",
+                            lane_references=lane.lane_references,
                         )
+                        locked_label = obstacle_mission.locked_lane_label()
+                        if mission_command is None and locked_label and lane_for_control.lane_label != locked_label:
+                            # Avoidance released this frame: recompute (stateless
+                            # contest controller) on the locked target lane.
+                            lane_for_control = lock_lane_detection(lane_for_control, locked_label)
+                            base_command = controller.compute(
+                                lane_for_control,
+                                safety,
+                                args.mode,
+                                manual_steer=manual_steer,
+                                manual_speed=manual_speed,
+                            )
                     command = apply_obstacle_mission_override(base_command, mission_command, safety)
             elif free_input is not None:
                 command = _free_manual_command(free_input)

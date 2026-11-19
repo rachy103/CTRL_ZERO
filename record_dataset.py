@@ -221,6 +221,7 @@ def main() -> None:
             contest_position_weight=runtime.CONTEST_POSITION_WEIGHT,
             contest_angle_norm_deg=runtime.CONTEST_STEERING_ANGLE_NORM_DEG,
             contest_steer_limit=runtime.CONTEST_STEER_LIMIT,
+            contest_center_offset_norm=runtime.CONTEST_CENTER_OFFSET_NORM,
             min_confidence=runtime.MIN_LANE_CONFIDENCE_TO_DRIVE,
             max_steer=runtime.MAX_STEER,
             reverse_steer=runtime.REVERSE_STEER,

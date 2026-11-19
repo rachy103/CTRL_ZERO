@@ -38,3 +38,15 @@ def test_explicit_state_class_overrides_crop_color():
     obj = DetectedObject("red_light", 0.95, BoundingBox(0, 0, 30, 40))
 
     assert traffic_light_state_from_objects(frame, [obj]) == "red"
+
+
+def test_stop_width_gate_requires_bbox_to_span_ratio_of_frame():
+    from ctrl_zero.traffic_light import traffic_light_meets_stop_width
+
+    narrow = DetectedObject("traffic_light", 0.9, BoundingBox(0, 0, 400, 100))   # 62.5% of 640
+    wide = DetectedObject("traffic_light", 0.9, BoundingBox(0, 0, 450, 100))     # 70.3% of 640
+
+    assert not traffic_light_meets_stop_width(narrow, 640, 0.70)
+    assert traffic_light_meets_stop_width(wide, 640, 0.70)
+    assert not traffic_light_meets_stop_width(None, 640, 0.70)
+    assert traffic_light_meets_stop_width(None, 640, 0.0)

@@ -10,28 +10,28 @@
 // Serial runs at 115200 baud -> set the Serial Monitor/Plotter to 115200
 // (and main.py ARDUINO_BAUDRATE = 115200).
 
-const int DRIVE_L_IN1 = 4;
-const int DRIVE_L_IN2 = 5;
-const int DRIVE_R_IN1 = 6;
-const int DRIVE_R_IN2 = 7;
+const int DRIVE_L_IN1 = 7;
+const int DRIVE_L_IN2 = 6;
+const int DRIVE_R_IN1 = 4;
+const int DRIVE_R_IN2 = 5;
 const int STEER_IN1 = 2;
 const int STEER_IN2 = 3;
-const int STEER_POT = A0;
+const int STEER_POT = A3;
 
 const bool DRIVE_L_INVERTED = true;
-const bool DRIVE_R_INVERTED = true;
-const bool STEER_INVERTED = true;
+const bool DRIVE_R_INVERTED = false;
+const bool STEER_INVERTED = false;
 
 // 가변저항 값 범위: 사용자가 실측한 딱 엣지값.
-const int POT_LEFT = 571;
-const int POT_RIGHT = 437;
-const int POT_MIN_SAFE = 437;
-const int POT_MAX_SAFE = 571;
+const int POT_LEFT = 723;
+const int POT_RIGHT = 514;
+const int POT_MIN_SAFE = 514;
+const int POT_MAX_SAFE = 723;
 
-const float STEER_KP = 4.4f; //4.4f
-const float STEER_KI = 0.05f; //60.0f
-const float STEER_KD = 0.05f; // 0.05f
-const int STEER_FF_PWM = 90.0; //55
+const float STEER_KP = 4.0f; //4.4f
+const float STEER_KI = 0.02f; //60.0f
+const float STEER_KD = 0.01f; // 0.05f
+const int STEER_FF_PWM = 60.0; //55
 const int STEER_MAX_PWM = 255;
 const int STEER_DEADBAND_CNT = 6; //6
 const float STEER_SLEW_PER_MS = 1.0f;

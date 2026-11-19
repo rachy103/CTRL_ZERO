@@ -4,7 +4,7 @@ import math
 import time
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -14,7 +14,7 @@ from ctrl_zero.control import DriveCommand
 from ctrl_zero.lidar import min_distance_mm_in_ros_sector
 from ctrl_zero.perception import DetectedObject, compact_class_name
 from ctrl_zero.safety import SafetyDecision
-from ctrl_zero.vision.base import LaneDetection
+from ctrl_zero.vision.base import LaneDetection, LaneReference
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,25 @@ class ContestObstacleMissionConfig:
     # follower (there is no counter-steer "pass" phase).  A car still dead ahead
     # re-chains another shift-out instead of returning control for one frame.
     retrigger_cooldown_s: float = 1.0
+    # --- obstacle_automatic -------------------------------------------------
+    # When True the shift-out ends on GEOMETRY instead of a fixed timer: once
+    # the target lane's look-ahead point sits near the frame centre for
+    # auto_settle_frames in a row, avoidance releases and the lane follower is
+    # locked onto the target lane for auto_lane_lock_s.  This copes with
+    # S-curves where a fixed time either overshoots or undershoots.
+    #   look-ahead point = target-lane centreline at
+    #       near_y + auto_lookahead_ratio * (far_y - near_y)   (0=near, 1=far)
+    #   error = (x_lookahead - frame_centre_x) / frame_centre_x
+    #   settled when |error| <= auto_center_tolerance_norm
+    # The timer still bounds it: never release before auto_min_shift_s, and
+    # always release after auto_max_shift_s (e.g. target lane never seen).
+    automatic: bool = False
+    auto_lookahead_ratio: float = 0.40
+    auto_center_tolerance_norm: float = 0.12
+    auto_settle_frames: int = 2
+    auto_min_shift_s: float = 0.30
+    auto_max_shift_s: float = 2.50
+    auto_lane_lock_s: float = 1.50
 
 @dataclass(frozen=True)
 class ContestCarObservation:
@@ -146,6 +165,21 @@ class ContestObstacleMission:
         self.phase_started_s = 0.0
         self.cooldown_until_s = 0.0
         self.cruise_speed = int(self.config.cruise_speed)
+        self._resume_pending = False
+        # obstacle_automatic state
+        self.auto_settle_counter = 0
+        self.auto_target_error: float | None = None
+        self.locked_lane: int | None = None
+        self.lane_lock_until_s = 0.0
+        self.latest_lane_references: Mapping[str, LaneReference] = {}
+        self.latest_frame_width: int | None = None
+
+    def locked_lane_label(self, now_s: float | None = None) -> str | None:
+        """Lane the follower must track right after an automatic avoidance."""
+        now = time.monotonic() if now_s is None else float(now_s)
+        if self.locked_lane is None or now >= self.lane_lock_until_s:
+            return None
+        return f"lane{self.locked_lane}"
 
     @property
     def active(self) -> bool:
@@ -223,6 +257,10 @@ class ContestObstacleMission:
             "shift_steer": self.active_shift_steer,
             "heading_deg": self.latest_heading_deg,
             "offset_norm": self.latest_offset_norm,
+            "automatic": self.config.automatic,
+            "auto_err": self.auto_target_error,
+            "auto_settle": self.auto_settle_counter,
+            "locked_lane": self.locked_lane_label(),
         }
 
     def step(
@@ -238,9 +276,20 @@ class ContestObstacleMission:
         lane_follow_steer: int = 0,
         cruise_speed: int | None = None,
         now_s: float | None = None,
+        hold: bool = False,
+        lane_references: Mapping[str, LaneReference] | None = None,
     ) -> DriveCommand | None:
         now = time.monotonic() if now_s is None else float(now_s)
+        self.latest_lane_references = dict(lane_references or {})
+        self.latest_frame_width = int(frame_width) if frame_width else None
         observed_lane = _contest_lane_number(current_lane)
+        if self.locked_lane is not None and now < self.lane_lock_until_s:
+            # During the post-avoidance lock trust the lane we drove into,
+            # not the (weak) nearest-lane label.
+            observed_lane = self.locked_lane
+        if self.config.automatic and self.active and self.avoidance_source_lane in (1, 2):
+            # Mid-avoidance the label flips around; keep the source lane.
+            observed_lane = self.avoidance_source_lane
         if observed_lane is not None:
             self.current_lane = observed_lane
         self.latest_heading_deg = heading_deg
@@ -254,9 +303,33 @@ class ContestObstacleMission:
 
         if not self.config.enabled:
             return None
+        if hold:
+            # Stopped at a red light: freeze the mission so no avoidance timer
+            # or cooldown runs out while the car is not moving.
+            self._hold()
+            return None
+        if self._resume_pending:
+            # First frame after the red-light hold is released (green).  Skip
+            # the cooldown and the consecutive-frame gate: avoid right away if
+            # an obstacle is ahead.
+            self._resume_pending = False
+            if self._obstacle_present():
+                return self._begin_shift_out(now)
         if self.active:
             return self._avoidance_command(now)
         return self._lane_follow_step(now)
+
+    def _hold(self) -> None:
+        self.phase = ContestObstaclePhase.LANE_FOLLOW
+        self.trigger_counter = 0
+        self.avoidance_source_lane = None
+        self.active_shift_steer = 0
+        self.cooldown_until_s = 0.0
+        self.auto_settle_counter = 0
+        self.auto_target_error = None
+        self.locked_lane = None
+        self.lane_lock_until_s = 0.0
+        self._resume_pending = True
 
     def _lidar_range(self, scan: np.ndarray | None) -> float | None:
         return min_distance_mm_in_ros_sector(
@@ -308,22 +381,31 @@ class ContestObstacleMission:
         self.trigger_counter = 0
         self.phase = ContestObstaclePhase.AVOID_SHIFT_OUT
         self.phase_started_s = now_s
+        self.auto_settle_counter = 0
+        self.auto_target_error = None
+        self.locked_lane = None
+        self.lane_lock_until_s = 0.0
         self.avoidance_source_lane = self.current_lane
         self.active_shift_steer = (
             self.config.lane2_shift_steer
             if self.avoidance_source_lane == 2
             else self.config.lane1_shift_steer
         )
-        # Extend the shift-out time when the car is already steered hard at
-        # detection (e.g. mid-curve), so the maneuver still clears the lane.
+        # Adjust the shift-out time by the steering at detection: when the car
+        # is steered AGAINST the shift direction it needs longer to swing over,
+        # so extend; when already steered TOWARD it, shorten to avoid overshoot.
+        steer = self.latest_lane_follow_steer
+        opposing = (steer * self.active_shift_steer) < 0
+        extra = abs(steer) * self.config.shift_out_steer_weight
         self.active_shift_out_duration_s = max(
             0.0,
-            self.config.shift_out_duration_s
-            + abs(self.latest_lane_follow_steer) * self.config.shift_out_steer_weight,
+            self.config.shift_out_duration_s + (extra if opposing else -extra),
         )
         return self._command(self.active_shift_steer, "obstacle_avoid_shift_out")
 
     def _avoidance_command(self, now_s: float) -> DriveCommand | None:
+        if self.phase == ContestObstaclePhase.AVOID_SHIFT_OUT and self.config.automatic:
+            return self._automatic_avoidance_command(now_s)
         if self.phase == ContestObstaclePhase.AVOID_SHIFT_OUT:
             duration = max(0.0, self.active_shift_out_duration_s)
             if now_s - self.phase_started_s < duration:
@@ -333,6 +415,58 @@ class ContestObstacleMission:
             # dead ahead in the lane we just entered.
             return self._finish_or_rechain(now_s)
         return None
+
+    def avoidance_target_lane(self) -> int | None:
+        if self.avoidance_source_lane == 1:
+            return 2
+        if self.avoidance_source_lane == 2:
+            return 1
+        return None
+
+    def _target_lookahead_error(self) -> float | None:
+        # Normalised x error of the target lane's look-ahead point vs frame centre.
+        target = self.avoidance_target_lane()
+        width = self.latest_frame_width
+        if target is None or not width:
+            return None
+        ref = self.latest_lane_references.get(f"lane{target}")
+        if ref is None:
+            return None
+        ratio = min(max(float(self.config.auto_lookahead_ratio), 0.0), 1.0)
+        y = ref.near_y + ratio * (ref.far_y - ref.near_y)
+        x = _reference_x_at_y(ref.near_x, ref.far_x, ref.near_y, ref.far_y, y)
+        center = width / 2.0
+        return (x - center) / max(center, 1.0)
+
+    def _automatic_avoidance_command(self, now_s: float) -> DriveCommand | None:
+        # obstacle_automatic: keep the shift-out steer until the target lane's
+        # look-ahead point is centred for auto_settle_frames in a row, then hand
+        # over to the lane follower locked onto that lane.  Frames where the
+        # target lane is not visible are not judged (steer is held).
+        elapsed = now_s - self.phase_started_s
+        if elapsed >= max(0.0, self.config.auto_max_shift_s):
+            return self._finish_or_rechain(now_s)
+        error = self._target_lookahead_error()
+        self.auto_target_error = error
+        if error is not None and abs(error) <= self.config.auto_center_tolerance_norm:
+            self.auto_settle_counter += 1
+        else:
+            self.auto_settle_counter = 0
+        if (
+            elapsed >= max(0.0, self.config.auto_min_shift_s)
+            and self.auto_settle_counter >= max(1, self.config.auto_settle_frames)
+        ):
+            # No re-chain here: the car still in the camera centre is usually
+            # the SAME obstacle we just passed, and the raw lane label is not
+            # trustworthy mid-change.  We know where we went: the target lane.
+            target = self.avoidance_target_lane()
+            self._finish_avoidance(now_s)
+            if target is not None:
+                self.current_lane = target
+                self.locked_lane = target
+                self.lane_lock_until_s = now_s + max(0.0, self.config.auto_lane_lock_s)
+            return None
+        return self._command(self.active_shift_steer, "obstacle_avoid_auto")
 
     def _finish_or_rechain(self, now_s: float) -> DriveCommand | None:
         # Obstacle avoidance stays top priority.  If another obstacle is still
@@ -610,6 +744,16 @@ def _alternate_lane_label(current_label: str, available_labels: Iterable[str]) -
         if label != current_label:
             return label
     return None
+
+
+def lock_lane_detection(lane: LaneDetection, target_label: str | None) -> LaneDetection:
+    """Re-centre a lane detection on target_label's reference (if visible)."""
+    if not target_label:
+        return lane
+    ref = lane.lane_references.get(target_label)
+    if ref is None:
+        return lane
+    return _lane_detection_for_reference(lane, target_label, ref)
 
 
 def _lane_detection_for_reference(lane: LaneDetection, target_label: str, target) -> LaneDetection:

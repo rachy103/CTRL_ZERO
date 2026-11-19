@@ -28,8 +28,8 @@
 // --- pins / convention (match CTRL_ZERO_Controller.ino) ---------------------
 const int STEER_IN1 = 2;
 const int STEER_IN2 = 3;
-const int STEER_POT = A0;
-const bool STEER_INVERTED = true;
+const int STEER_POT = A3;
+const bool STEER_INVERTED = false;
 
 // --- drive / print tuning ---------------------------------------------------
 const int PWM_MIN = 40;

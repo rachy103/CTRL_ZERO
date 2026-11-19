@@ -18,6 +18,7 @@ class DriveConfig:
     contest_position_weight: float = 0.05
     contest_angle_norm_deg: float = 50.0
     contest_steer_limit: float = 10.0
+    contest_center_offset_norm: float = 0.0
     curve_speed_gain: float = 3.0
     kappa_ref: float = 0.0015
     wheelbase_px: float = 220.0
@@ -74,7 +75,8 @@ class DriveController:
 
     def _compute_contest(self, lane: LaneDetection, obstacle: ObstacleDecision | SafetyDecision | None) -> DriveCommand:
         steering_angle = lane.heading_deg or 0.0
-        vehicle_position_x = -(lane.offset_px or 0.0)
+        center_bias_px = self.config.contest_center_offset_norm * lane.frame_center_x
+        vehicle_position_x = -((lane.offset_px or 0.0) - center_bias_px)
 
         angle_norm = max(abs(self.config.contest_angle_norm_deg), 1e-9)
         steer_limit = max(abs(self.config.contest_steer_limit), 1e-9)

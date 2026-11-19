@@ -48,6 +48,7 @@ def step(
     heading_deg: float | None = None,
     offset_norm: float | None = None,
     lane_follow_steer: int = 0,
+    hold: bool = False,
 ):
     return mission.step(
         objects=objects,
@@ -60,6 +61,7 @@ def step(
         lane_follow_steer=lane_follow_steer,
         cruise_speed=cruise_speed,
         now_s=now_s,
+        hold=hold,
     )
 
 
@@ -199,14 +201,15 @@ def test_next_obstacle_can_trigger_after_shift_out_and_cooldown():
     assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
 
 
-def test_shift_out_duration_grows_with_steering_at_detection():
+def test_shift_out_duration_grows_when_steering_against_shift():
+    # Lane 2 shifts with negative steer; lane-follow steer +80 opposes it.
     # base 0.10s + |steer| * 0.01 = 0.10 + 80*0.01 = 0.90s of shift-out.
     mission = ContestObstacleMission(
         timed_config(shift_out_duration_s=0.10, shift_out_steer_weight=0.01, retrigger_cooldown_s=0.0)
     )
     car = [car_with_area(6000.0)]
 
-    start = step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2, lane_follow_steer=-80)
+    start = step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2, lane_follow_steer=80)
     assert start.reason == "obstacle_avoid_shift_out"
 
     # Still shifting at 0.89s (would already have finished without the weight).
@@ -215,6 +218,25 @@ def test_shift_out_duration_grows_with_steering_at_detection():
 
     # After 0.90s the shift-out ends and, with nothing ahead, control returns.
     after = step(mission, now_s=0.91, scan=None, objects=[], lane=2)
+    assert after is None
+    assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
+
+
+def test_shift_out_duration_shrinks_when_already_steering_toward_shift():
+    # Lane 2 shifts with negative steer; lane-follow steer -30 already points
+    # the same way.  base 0.50s - 30*0.01 = 0.20s of shift-out.
+    mission = ContestObstacleMission(
+        timed_config(shift_out_duration_s=0.50, shift_out_steer_weight=0.01, retrigger_cooldown_s=0.0)
+    )
+    car = [car_with_area(6000.0)]
+
+    start = step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2, lane_follow_steer=-30)
+    assert start.reason == "obstacle_avoid_shift_out"
+
+    mid = step(mission, now_s=0.19, scan=None, objects=[], lane=2)
+    assert mid.reason == "obstacle_avoid_shift_out"
+
+    after = step(mission, now_s=0.21, scan=None, objects=[], lane=2)
     assert after is None
     assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
 
@@ -302,3 +324,38 @@ def test_traffic_light_stop_is_preserved_during_avoidance_override():
     command = apply_obstacle_mission_override(base_command, mission_command, traffic_stop)
 
     assert command is base_command
+
+
+def test_red_light_hold_freezes_mission_and_green_avoids_immediately():
+    # Cooldown left over from an earlier avoidance must not block the restart.
+    mission = ContestObstacleMission(timed_config(trigger_frames=3, retrigger_cooldown_s=5.0))
+    mission.cooldown_until_s = 100.0
+    car = [car_with_area(6000.0)]
+
+    # Stopped at red with a car ahead: no avoidance starts while holding.
+    for t in (0.0, 0.1, 0.2, 0.3):
+        assert step(mission, now_s=t, scan=forward_scan(900.0), objects=car, lane=2, hold=True) is None
+        assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
+
+    # Green: first frame avoids at once (no cooldown, no trigger_frames wait).
+    resumed = step(mission, now_s=0.4, scan=forward_scan(900.0), objects=car, lane=2)
+    assert resumed == DriveCommand(-60, 255, "obstacle_avoid_shift_out")
+    assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
+
+
+def test_red_light_hold_cancels_in_progress_avoidance_without_cooldown():
+    mission = ContestObstacleMission(timed_config(retrigger_cooldown_s=5.0))
+    car = [car_with_area(6000.0)]
+
+    step(mission, now_s=0.0, scan=forward_scan(900.0), objects=car, lane=2)
+    assert mission.phase == ContestObstaclePhase.AVOID_SHIFT_OUT
+
+    step(mission, now_s=0.1, scan=forward_scan(900.0), objects=car, lane=2, hold=True)
+    assert mission.phase == ContestObstaclePhase.LANE_FOLLOW
+    assert mission.cooldown_until_s == 0.0
+
+    # Released with nothing ahead: plain lane following, and the next obstacle
+    # triggers normally (no leftover cooldown).
+    assert step(mission, now_s=0.2, scan=None, objects=[], lane=2) is None
+    again = step(mission, now_s=0.3, scan=forward_scan(900.0), objects=car, lane=2)
+    assert again == DriveCommand(-60, 255, "obstacle_avoid_shift_out")

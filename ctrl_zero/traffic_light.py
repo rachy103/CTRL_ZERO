@@ -31,6 +31,29 @@ class TrafficLightConfig:
     min_lit_value: int = 90
 
 
+class TrafficLightLatch:
+    """Red latches a stop; only a visible GREEN releases it.
+
+    Once red is seen the car stays stopped even if the red lamp disappears
+    (missed detection, unlit, out of frame).  The latch is cleared only when a
+    green light is actually seen.
+    """
+
+    def __init__(self) -> None:
+        self.stopped = False
+
+    def update(self, state: str) -> str:
+        normalized = state.lower().strip() if state else TRAFFIC_LIGHT_UNKNOWN
+        if normalized == TRAFFIC_LIGHT_RED:
+            self.stopped = True
+        elif normalized == TRAFFIC_LIGHT_GREEN:
+            self.stopped = False
+        return TRAFFIC_LIGHT_RED if self.stopped else normalized
+
+    def reset(self) -> None:
+        self.stopped = False
+
+
 def is_traffic_light_name(class_name: str) -> bool:
     compact = compact_class_name(class_name)
     if parse_traffic_light_state(class_name) != TRAFFIC_LIGHT_UNKNOWN:
@@ -77,6 +100,23 @@ def traffic_light_meets_stop_size(
         return False
     ratio = traffic_light_area_ratio(obj, frame_area)
     return ratio is not None and ratio >= min_area_ratio
+
+
+def traffic_light_meets_stop_width(
+    obj: DetectedObject | None,
+    frame_width: float | None,
+    min_width_ratio: float,
+) -> bool:
+    """True when the light's bbox spans at least min_width_ratio of the frame width.
+
+    0.0 disables the gate.  Used so a red light only partly in view (bbox still
+    narrow) does not latch a stop yet.
+    """
+    if min_width_ratio <= 0.0:
+        return True
+    if obj is None or not frame_width or frame_width <= 0:
+        return False
+    return obj.bbox.width / float(frame_width) >= min_width_ratio
 
 
 def traffic_light_state_from_objects(
