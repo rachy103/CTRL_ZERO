@@ -27,6 +27,7 @@ from ctrl_zero.vision.parking_slot import ParkingSlotDetector, best_slot
 from ctrl_zero.safety import SafetyDecision, build_safety_decision
 from ctrl_zero.traffic_light import TrafficLightLatch, traffic_light_meets_stop_width, traffic_light_object
 from ctrl_zero.ui import draw_status
+from ctrl_zero.vision.stop_line import StopLineConfig, detect_stop_line, draw_stop_line, stop_line_reached
 from ctrl_zero.vision.preprocess import BirdEyeConfig, LanePreprocessor, ROICropConfig
 
 
@@ -76,15 +77,15 @@ OBSTACLE_TRIGGER_FRAMES = 2
 #            frame, so RAISE it to react only when nearer, LOWER it to react
 #            farther, 0.0 = any central car triggers.  Watch the [OBS] log's
 #            far_y= value to tune it to your camera geometry.
-OBSTACLE_CAMERA_TRIGGER_FAR_Y_RATIO = 0.0
+OBSTACLE_CAMERA_TRIGGER_FAR_Y_RATIO = 0.4
 
 OBSTACLE_LANE2_SHIFT_STEER = -60
 OBSTACLE_LANE1_SHIFT_STEER = 60
-OBSTACLE_SHIFT_OUT_SECONDS = 1.5
+OBSTACLE_SHIFT_OUT_SECONDS = 3
 # Extra shift-out time per unit of steering at detection (seconds per steer unit).
 # duration = OBSTACLE_SHIFT_OUT_SECONDS + |steer_at_detection| * this. 0 disables.
 OBSTACLE_SHIFT_OUT_STEER_WEIGHT = 0.000
-OBSTACLE_RETRIGGER_COOLDOWN_SECONDS = 3.5
+OBSTACLE_RETRIGGER_COOLDOWN_SECONDS = 2
 # obstacle_automatic: True -> end the shift-out when the target lane's look-ahead
 # point is centred (S-curve safe), then lock lane following onto that lane.
 # False -> the original timed shift-out above.
@@ -375,7 +376,25 @@ TRAFFIC_LIGHT_STOP_AREA_RATIO = 0.0
 # A red light only latches the stop once its bbox width reaches this fraction of
 # the frame width (0.70 = 70%).  Prevents stopping on a light that is only
 # partly in view.  0.0 disables.  Green always releases regardless of size.
-TRAFFIC_LIGHT_STOP_WIDTH_RATIO = 0.2
+TRAFFIC_LIGHT_STOP_WIDTH_RATIO = 0.35
+# Stop-line mode.  True -> a red light stops the car only when the white stop
+# line crossing lane1/lane2 AND the crosswalk stripes beyond it are detected,
+# and the line has reached TRAFFIC_LINE_STOP_GAP_RATIO.  False -> width gate above.
+TRAFFIC_LINE = True
+# Distance kept to the stop line (the white line on the CAR side of the
+# crosswalk stripes): stop when the gap between the frame bottom (car) and the
+# line, measured at frame centre along the tilted line, is <= this ratio of the
+# frame height.  LARGER = stops farther from the line.  Orange guide on screen.
+TRAFFIC_LINE_STOP_GAP_RATIO = 0.4
+STOP_LINE_CONFIG = StopLineConfig(
+    white_min_value=160,
+    white_max_saturation=120,
+    crosswalk_min_stripes=3,
+    line_min_length_ratio=0.35,
+    require_crosswalk=True,
+)
+# After a green is seen, ignore the traffic light (any red) for this long.
+TRAFFIC_LIGHT_GREEN_COOLDOWN_SECONDS = 10.0
 
 # YOLO lane model. Use a lane-trained Ultralytics .pt file, not a generic COCO model.
 YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final_openvino_model"
@@ -875,7 +894,7 @@ def main() -> None:
     last_time = time.perf_counter()
     drive_started = not motor_enabled
     prev_obstacle_detected = False
-    traffic_latch = TrafficLightLatch()
+    traffic_latch = TrafficLightLatch(green_cooldown_s=TRAFFIC_LIGHT_GREEN_COOLDOWN_SECONDS)
 
     # --free-manual: hold-to-drive (W/S/A/D) while waiting, until 't' starts the
     # mode. (manual mode is already hold-to-drive, so it needs no extra listener.)
@@ -1317,7 +1336,23 @@ def main() -> None:
             traffic_obj = traffic_light_object(lane_for_control.objects)
             frame_area = float(max(lane_for_control.annotated.shape[0] * lane_for_control.annotated.shape[1], 1))
             raw_traffic_state = lane_for_control.traffic_light_state
-            if (raw_traffic_state or "").lower().strip() == "red" and not traffic_light_meets_stop_width(
+            if TRAFFIC_LINE:
+                # Crosswalk-pattern mode (traffic light colour ignored for the
+                # stop): stop when the crosswalk pattern's leading edge is within
+                # TRAFFIC_LINE_STOP_GAP_RATIO of the car.  The stop latches and a
+                # green light releases it (then GREEN_COOLDOWN ignores the pattern).
+                stop_line = detect_stop_line(frame, lane.lane_references, STOP_LINE_CONFIG)
+                if display_enabled:
+                    draw_stop_line(lane_for_control.annotated, stop_line, TRAFFIC_LINE_STOP_GAP_RATIO)
+                if (raw_traffic_state or "").lower().strip() != "green":
+                    # Stop only when a traffic light is detected TOGETHER with
+                    # the crosswalk pattern within the stop gap.
+                    raw_traffic_state = (
+                        "red"
+                        if traffic_obj is not None and stop_line_reached(stop_line, TRAFFIC_LINE_STOP_GAP_RATIO)
+                        else "unknown"
+                    )
+            elif (raw_traffic_state or "").lower().strip() == "red" and not traffic_light_meets_stop_width(
                 traffic_obj, lane_for_control.annotated.shape[1], TRAFFIC_LIGHT_STOP_WIDTH_RATIO
             ):
                 # Red seen but the light is still too narrow (partly in view):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -39,19 +40,31 @@ class TrafficLightLatch:
     green light is actually seen.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, green_cooldown_s: float = 0.0) -> None:
         self.stopped = False
+        # After a green is seen, ignore any red (flicker / misread while the
+        # light is still in view) for this many seconds.
+        self.green_cooldown_s = float(green_cooldown_s)
+        self.ignore_until_s = 0.0
 
-    def update(self, state: str) -> str:
+    def update(self, state: str, now_s: float | None = None) -> str:
+        now = time.monotonic() if now_s is None else float(now_s)
         normalized = state.lower().strip() if state else TRAFFIC_LIGHT_UNKNOWN
+        if now < self.ignore_until_s:
+            # Cooldown after green: the traffic light is treated as gone.
+            self.stopped = False
+            return TRAFFIC_LIGHT_UNKNOWN
         if normalized == TRAFFIC_LIGHT_RED:
             self.stopped = True
         elif normalized == TRAFFIC_LIGHT_GREEN:
             self.stopped = False
+            if self.green_cooldown_s > 0.0:
+                self.ignore_until_s = now + self.green_cooldown_s
         return TRAFFIC_LIGHT_RED if self.stopped else normalized
 
     def reset(self) -> None:
         self.stopped = False
+        self.ignore_until_s = 0.0
 
 
 def is_traffic_light_name(class_name: str) -> bool:

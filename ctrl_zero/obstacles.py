@@ -219,6 +219,9 @@ class ContestObstacleMission:
             return f"no_lane(current_lane={self.current_lane})"
         if not self.last_car.detected:
             return "no_camera_car"
+        car_lane = self.car_lane()
+        if car_lane is not None and car_lane != self.current_lane:
+            return f"car_in_other_lane(car=lane{car_lane})"
         if self.config.use_lidar:
             if not self._lidar_is_near():
                 mm = self.latest_lidar_range_mm
@@ -287,9 +290,10 @@ class ContestObstacleMission:
             # During the post-avoidance lock trust the lane we drove into,
             # not the (weak) nearest-lane label.
             observed_lane = self.locked_lane
-        if self.config.automatic and self.active and self.avoidance_source_lane in (1, 2):
-            # Mid-avoidance the label flips around; keep the source lane.
-            observed_lane = self.avoidance_source_lane
+        if self.config.automatic and self.active and self.avoidance_target_lane() is not None:
+            # Mid-avoidance the label flips around; we are heading into the
+            # target lane, so treat that as our lane.
+            observed_lane = self.avoidance_target_lane()
         if observed_lane is not None:
             self.current_lane = observed_lane
         self.latest_heading_deg = heading_deg
@@ -358,6 +362,10 @@ class ContestObstacleMission:
         # the camera bbox far_y when False.  Without the consecutive-frame counter.
         if self.current_lane not in (1, 2) or not self.last_car.detected:
             return False
+        car_lane = self.car_lane()
+        if car_lane is not None and car_lane != self.current_lane:
+            # The car is in the OTHER lane (e.g. visible mid-frame on a curve).
+            return False
         if self.config.use_lidar:
             return self._lidar_is_near()
         return self._camera_is_near()
@@ -415,6 +423,23 @@ class ContestObstacleMission:
             # dead ahead in the lane we just entered.
             return self._finish_or_rechain(now_s)
         return None
+
+    def car_lane(self) -> int | None:
+        """Lane (1/2) whose centreline is closest to the car's bbox bottom-centre."""
+        obj = self.last_car.obj
+        if obj is None:
+            return None
+        x = float(obj.bbox.center_x)
+        y = float(obj.bbox.bottom_y)
+        best: tuple[float, int] | None = None
+        for number in (1, 2):
+            ref = self.latest_lane_references.get(f"lane{number}")
+            if ref is None:
+                continue
+            dist = abs(_reference_x_at_y(ref.near_x, ref.far_x, ref.near_y, ref.far_y, y) - x)
+            if best is None or dist < best[0]:
+                best = (dist, number)
+        return None if best is None else best[1]
 
     def avoidance_target_lane(self) -> int | None:
         if self.avoidance_source_lane == 1:
