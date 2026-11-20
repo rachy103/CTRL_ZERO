@@ -27,11 +27,12 @@ class ParkingSlotDetector:
     """Thin wrapper over the Ultralytics pose model (OpenVINO or .pt)."""
 
     def __init__(self, model_path, device: str = "cpu", image_size: int = 640,
-                 confidence: float = 0.25, iou: float = 0.45):
+                 confidence: float = 0.25, iou: float = 0.45, half: bool = False):
         from ultralytics import YOLO
 
         self.model = YOLO(str(model_path), task="pose")
         self.device = device
+        self.half = half
         self.image_size = image_size
         self.confidence = confidence
         self.iou = iou
@@ -39,7 +40,7 @@ class ParkingSlotDetector:
     def detect(self, frame_bgr) -> list[SlotDetection]:
         results = self.model.predict(
             frame_bgr, imgsz=self.image_size, conf=self.confidence,
-            iou=self.iou, device=self.device, verbose=False,
+            iou=self.iou, device=self.device, half=self.half, verbose=False,
         )
         if not results:
             return []

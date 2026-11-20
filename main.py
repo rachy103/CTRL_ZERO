@@ -27,6 +27,7 @@ from ctrl_zero.vision.parking_slot import ParkingSlotDetector, best_slot
 from ctrl_zero.safety import SafetyDecision, build_safety_decision
 from ctrl_zero.traffic_light import TrafficLightLatch, traffic_light_meets_stop_width, traffic_light_object
 from ctrl_zero.ui import draw_status
+from ctrl_zero.vision.device import describe_device, is_gpu, resolve_device, resolve_model_path
 from ctrl_zero.vision.stop_line import StopLineConfig, detect_stop_line, draw_stop_line, stop_line_reached
 from ctrl_zero.vision.preprocess import BirdEyeConfig, LanePreprocessor, ROICropConfig
 
@@ -399,7 +400,14 @@ TRAFFIC_LIGHT_GREEN_COOLDOWN_SECONDS = 10.0
 # YOLO lane model. Use a lane-trained Ultralytics .pt file, not a generic COCO model.
 YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final_openvino_model"
 # YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final.pt"
-YOLO_DEVICE = "cpu"
+# "auto" -> NVIDIA GPU (device 0) when CUDA is available, else "cpu".
+# Force with "cpu" / "0", or on the command line: --device cpu|0|auto.
+YOLO_DEVICE = "auto"
+# Swap each model path to the file that fits the device:
+#   CPU -> <name>_openvino_model, GPU -> <name>.engine (TensorRT) or <name>.pt
+YOLO_AUTO_MODEL_FORMAT = True
+# FP16 inference on GPU (ignored on CPU).
+YOLO_GPU_HALF = True
 YOLO_IMAGE_SIZE = 640
 YOLO_CONFIDENCE = 0.25
 YOLO_IOU = 0.45
@@ -653,6 +661,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("vision", "manual", "auto", "parking_sim", "parking_logic"), default=RUN_MODE)
     parser.add_argument("--backend", choices=("yolo",), default=LANE_BACKEND)
     parser.add_argument("--yolo-model", type=Path, default=YOLO_MODEL_PATH)
+    parser.add_argument("--device", default=YOLO_DEVICE, help="auto | cpu | 0 (GPU index)")
     parser.add_argument("--yolo-frame-skip", type=int, default=YOLO_FRAME_SKIP)
     parser.add_argument("--yolo-imgsz", type=int, default=YOLO_IMAGE_SIZE)
     parser.add_argument("--yolo-conf", type=float, default=YOLO_CONFIDENCE)
@@ -731,6 +740,12 @@ def build_preprocessor(args) -> LanePreprocessor:
     )
 
 
+def _model_for_device(path: Path, device: str) -> Path:
+    if not YOLO_AUTO_MODEL_FORMAT:
+        return Path(path)
+    return resolve_model_path(Path(path), device)
+
+
 def build_lane_detector(args):
     from ctrl_zero.vision.yolo_lane import YOLOLaneConfig, YOLOLaneDetector
     from ctrl_zero.vision.cache import FrameSkippingLaneDetector
@@ -738,8 +753,9 @@ def build_lane_detector(args):
     yolo_classes = tuple(item.strip() for item in args.yolo_classes.split(",") if item.strip())
     detector = YOLOLaneDetector(
         YOLOLaneConfig(
-            model_path=args.yolo_model,
-            device=YOLO_DEVICE,
+            model_path=_model_for_device(args.yolo_model, args.device),
+            device=args.device,
+            half=args.half,
             image_size=args.yolo_imgsz,
             confidence=args.yolo_conf,
             iou=args.yolo_iou,
@@ -772,6 +788,13 @@ def build_lane_detector(args):
 
 def main() -> None:
     args = build_parser().parse_args()
+    args.device = resolve_device(args.device)
+    args.half = bool(YOLO_GPU_HALF and is_gpu(args.device))
+    print(
+        f"[YOLO] device={describe_device(args.device)} half={args.half} "
+        f"model={_model_for_device(args.yolo_model, args.device).name}",
+        flush=True,
+    )
     if args.list_ports:
         print(format_serial_ports())
         return
@@ -1044,8 +1067,9 @@ def main() -> None:
                 print("--best-model: slot bbox -> infinite-lane frame -> lane model "
                       f"({PARKING_LOGIC_BEST_MODEL_PATH})")
                 slot_detector = ParkingSlotDetector(
-                    PARKING_LOGIC_BEST_MODEL_PATH,
-                    device=YOLO_DEVICE,
+                    _model_for_device(PARKING_LOGIC_BEST_MODEL_PATH, args.device),
+                    device=args.device,
+                    half=args.half,
                     image_size=args.yolo_imgsz,
                     confidence=PARKING_LOGIC_BEST_CONF,
                     iou=args.yolo_iou,

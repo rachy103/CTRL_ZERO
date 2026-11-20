@@ -19,6 +19,7 @@ from ctrl_zero.vision.preprocess import LanePreprocessor
 class YOLOLaneConfig:
     model_path: Path
     device: str = "cpu"
+    half: bool = False  # FP16, GPU only
     image_size: int = 640
     confidence: float = 0.25
     iou: float = 0.45
@@ -138,6 +139,7 @@ class YOLOLaneDetector:
             "conf": self.config.confidence,
             "iou": self.config.iou,
             "device": self.config.device,
+            "half": bool(self.config.half),
             "verbose": False,
             # retina_masks=False must not be used with a static 640x640 export:
             # masks then come back in letterboxed input space and the naive
