@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -38,6 +39,7 @@ from ctrl_zero.vision.preprocess import BirdEyeConfig, LanePreprocessor, ROICrop
 # =============================================================================
 
 BASE_DIR = Path(__file__).resolve().parent
+IS_WINDOWS = sys.platform == "win32"
 
 # Runtime mode: "vision"은 모터 미출력, "manual"은 키보드 수동, "auto"는 차선+라이다 자동 주행입니다.
 RUN_MODE = "auto"
@@ -45,20 +47,20 @@ LANE_BACKEND = "yolo"
 
 # Camera
 CAMERA_INDEX = 0
-CAMERA_BACKEND = "dshow"  # Windows: "dshow" 권장. 필요 시 "msmf" 또는 "any".
+CAMERA_BACKEND = "dshow" if IS_WINDOWS else "any"  # Windows: "dshow" 권장(필요 시 "msmf"). Linux: "any"(V4L2).
 CAMERA_WIDTH = 0
 CAMERA_HEIGHT = 0
 CAMERA_FPS = 0
 
 # Arduino / motor
 USE_ARDUINO = True
-ARDUINO_PORT = "COM5"
+ARDUINO_PORT = "COM5" if IS_WINDOWS else "auto"  # Linux: 자동 탐지 (보통 /dev/ttyACM0)
 ARDUINO_BAUDRATE = 115200
 DRIVE_MAX_PWM = 255
 
 # LiDAR
 USE_LIDAR = False
-LIDAR_PORT = "COM4"
+LIDAR_PORT = "COM4" if IS_WINDOWS else "/dev/ttyUSB0"
 LIDAR_POLL_EVERY_N_FRAMES = 1
 LIDAR_STOP_DISTANCE_MM = 450.0
 LIDAR_SLOW_DISTANCE_MM = 900.0
@@ -402,7 +404,7 @@ YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final_openvino_model"
 # YOLO_MODEL_PATH = BASE_DIR / "models" / "yolo" / "final.pt"
 # "auto" -> NVIDIA GPU (device 0) when CUDA is available, else "cpu".
 # Force with "cpu" / "0", or on the command line: --device cpu|0|auto.
-YOLO_DEVICE = "auto"
+YOLO_DEVICE = "cpu"  # CPU(OpenVINO) 고정. GPU 를 쓰려면 "auto" 또는 "0"
 # Swap each model path to the file that fits the device:
 #   CPU -> <name>_openvino_model, GPU -> <name>.engine (TensorRT) or <name>.pt
 YOLO_AUTO_MODEL_FORMAT = True

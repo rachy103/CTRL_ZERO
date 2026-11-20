@@ -1,5 +1,5 @@
 numpy>=1.23
-opencv-python>=4.8
+opencv-python>=4.8,<5  # 5.x 는 HoughLinesP 출력 형태가 달라 classical_lane 이 깨짐
 pyserial>=3.5
 rplidar-roboticia>=0.9.5
 requests>=2.31
